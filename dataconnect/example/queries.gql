@@ -1,0 +1,42 @@
+mutation CreateGroup($name: String!, $description: String, $joinCode: String) @auth(level: USER) {
+  group_insert(data: {
+    name: $name,
+    description: $description,
+    joinCode: $joinCode,
+    ownerId_expr: "auth.uid",
+    createdAt_expr: "request.time"
+  })
+}
+
+query ListMyGroups @auth(level: USER) {
+  groups(where: {ownerId: {eq_expr: "auth.uid"}}) {
+    id
+    name
+    description
+    joinCode
+    createdAt
+  }
+}
+
+mutation JoinGroup($groupId: UUID!) @auth(level: USER) {
+  groupMembership_insert(data: {
+    groupId: $groupId,
+    userId_expr: "auth.uid",
+    joinedAt_expr: "request.time",
+    role: "member",
+    status: "active"
+  })
+}
+
+query ListGroupEvents($groupId: UUID!) @auth(level: USER) {
+  events(where: {groupId: {eq: $groupId}}) {
+    id
+    title
+    description
+    eventDate
+    startTime
+    endTime
+    location
+    createdAt
+  }
+}

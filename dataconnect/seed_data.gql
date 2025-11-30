@@ -1,0 +1,92 @@
+mutation SeedDatabase @auth(level: NO_ACCESS) @transaction {
+  user_insertMany(data: [
+    {
+      id: "6b29c44d-9843-41f3-9c19-2b3c9f005173",
+      displayName: "Demo User 1",
+      email: "demo1@example.com",
+      createdAt: "2024-04-26T12:00:00Z",
+      photoUrl: "https://example.com/demo1.jpg"
+    },
+    {
+      id: "7b3ac55e-a954-4204-ad20-3c4d0a116284",
+      displayName: "Demo User 2",
+      email: "demo2@example.com",
+      createdAt: "2024-04-26T13:00:00Z",
+      photoUrl: "https://example.com/demo2.jpg"
+    }
+  ])
+  group_insertMany(data: [
+    {
+      id: "8c4bd66f-ba65-4315-be31-4d5e1b227395",
+      name: "Demo Group 1",
+      description: "A demo group",
+      createdAt: "2024-04-26T14:00:00Z",
+      ownerId: "6b29c44d-9843-41f3-9c19-2b3c9f005173",
+      joinCode: "DEMO1"
+    },
+    {
+      id: "9d5ce77g-cb76-4426-cf42-5e6f2c3384a6",
+      name: "Demo Group 2",
+      description: "Another demo group",
+      createdAt: "2024-04-26T15:00:00Z",
+      ownerId: "7b3ac55e-a954-4204-ad20-3c4d0a116284",
+      joinCode: "DEMO2"
+    }
+  ])
+  event_insertMany(data: [
+    {
+      id: "ae6df88h-dc87-4537-df53-6f703d4495b7",
+      title: "Demo Event 1",
+      description: "A demo event",
+      createdAt: "2024-04-26T16:00:00Z",
+      groupId: "8c4bd66f-ba65-4315-be31-4d5e1b227395",
+      creatorId: "6b29c44d-9843-41f3-9c19-2b3c9f005173",
+      eventDate: "2024-05-01",
+      startTime: "10:00",
+      endTime: "12:00",
+      location: "Demo Location 1"
+    },
+    {
+      id: "bf7eg99i-ed98-4648-eg64-7g814e55a6c8",
+      title: "Demo Event 2",
+      description: "Another demo event",
+      createdAt: "2024-04-26T17:00:00Z",
+      groupId: "9d5ce77g-cb76-4426-cf42-5e6f2c3384a6",
+      creatorId: "7b3ac55e-a954-4204-ad20-3c4d0a116284",
+      eventDate: "2024-05-02",
+      startTime: "14:00",
+      endTime: "16:00",
+      location: "Demo Location 2"
+    }
+  ])
+  groupMembership_insertMany(data: [
+    {
+      userId: "6b29c44d-9843-41f3-9c19-2b3c9f005173",
+      groupId: "8c4bd66f-ba65-4315-be31-4d5e1b227395",
+      joinedAt: "2024-04-26T18:00:00Z",
+      role: "admin",
+      status: "active"
+    },
+    {
+      userId: "7b3ac55e-a954-4204-ad20-3c4d0a116284",
+      groupId: "9d5ce77g-cb76-4426-cf42-5e6f2c3384a6",
+      joinedAt: "2024-04-26T19:00:00Z",
+      role: "member",
+      status: "pending"
+    }
+  ])
+  eventRSVP_insertMany(data: [
+    {
+      userId: "6b29c44d-9843-41f3-9c19-2b3c9f005173",
+      eventId: "ae6df88h-dc87-4537-df53-6f703d4495b7",
+      rsvpAt: "2024-04-26T20:00:00Z",
+      rsvpStatus: "going"
+    },
+    {
+      userId: "7b3ac55e-a954-4204-ad20-3c4d0a116284",
+      eventId: "bf7eg99i-ed98-4648-eg64-7g814e55a6c8",
+      rsvpAt: "2024-04-26T21:00:00Z",
+      rsvpStatus: "maybe"
+    }
+  ])
+}

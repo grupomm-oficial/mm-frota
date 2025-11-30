@@ -1,0 +1,41 @@
+type User @table {
+  displayName: String!
+  createdAt: Timestamp!
+  email: String
+  photoUrl: String
+}
+
+type Group @table {
+  name: String!
+  createdAt: Timestamp!
+  owner: User!
+  description: String
+  joinCode: String
+}
+
+type GroupMembership @table(key: ["user", "group"]) {
+  user: User!
+  group: Group!
+  joinedAt: Timestamp!
+  role: String!
+  status: String
+}
+
+type Event @table {
+  group: Group!
+  creator: User!
+  title: String!
+  eventDate: Date!
+  startTime: String!
+  createdAt: Timestamp!
+  description: String
+  location: String
+  endTime: String
+}
+
+type EventRSVP @table(key: ["user", "event"]) {
+  user: User!
+  event: Event!
+  rsvpStatus: String!
+  rsvpAt: Timestamp!
+}
