@@ -164,6 +164,10 @@ export default function VeiculosPage() {
     setFormOpen(true);
   }
 
+  function handleVerDetalhes(v: Vehicle) {
+    router.push(`/veiculos/${v.id}`);
+  }
+
   async function handleCreateVehicle() {
     try {
       setErrorMsg("");
@@ -531,6 +535,13 @@ export default function VeiculosPage() {
                     {isAdmin && (
                       <td className="py-2 pl-2 text-right">
                         <div className="flex justify-end gap-2">
+                          <Button
+                            size="sm"
+                            className="bg-neutral-800 hover:bg-neutral-700 text-yellow-300 border border-yellow-500/40 text-xs h-7 px-3"
+                            onClick={() => handleVerDetalhes(v)}
+                          >
+                            Detalhes
+                          </Button>
                           <Button
                             size="sm"
                             className="bg-yellow-500 hover:bg-yellow-400 text-black text-xs h-7 px-3"

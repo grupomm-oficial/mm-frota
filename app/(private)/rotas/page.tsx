@@ -56,6 +56,7 @@ interface RouteItem {
   status: RouteStatus;
   responsibleUserId: string;
   responsibleUserName?: string | null;
+  observacoes?: string | null; // 👈 NOVO CAMPO
 }
 
 export default function RotasPage() {
@@ -82,6 +83,8 @@ export default function RotasPage() {
   // Finalizar rota
   const [finishingRoute, setFinishingRoute] = useState<RouteItem | null>(null);
   const [endKmInput, setEndKmInput] = useState("");
+  const [endDestinoInput, setEndDestinoInput] = useState(""); // 👈 destino editável na finalização
+  const [obsInput, setObsInput] = useState(""); // 👈 observações ao finalizar
 
   const isAdmin = user?.role === "admin";
 
@@ -160,7 +163,6 @@ export default function RotasPage() {
             query(collection(db, "routes"), orderBy("startAt", "desc"))
           );
         } else {
-          // user comum: busca só rotas dele (sem orderBy para evitar problema de índice)
           routesSnap = await getDocs(
             query(
               collection(db, "routes"),
@@ -189,10 +191,10 @@ export default function RotasPage() {
             status: (data.status ?? "em_andamento") as RouteStatus,
             responsibleUserId: data.responsibleUserId,
             responsibleUserName: data.responsibleUserName ?? null,
+            observacoes: data.observacoes ?? null, // 👈 carrega observações
           };
         });
 
-        // para user comum, ordena na mão pela data
         const sorted = isAdmin
           ? rList
           : rList.sort((a, b) =>
@@ -267,7 +269,6 @@ export default function RotasPage() {
 
       const nowIso = new Date().toISOString();
 
-      // dados que irão para o Firestore (sem id)
       const newRouteData = {
         vehicleId: vehicle.id,
         vehiclePlate: vehicle.plate,
@@ -285,17 +286,16 @@ export default function RotasPage() {
         endKm: null as number | null,
         endAt: null as string | null,
         distanceKm: null as number | null,
+        observacoes: null as string | null, // 👈 começa sem observações
       };
 
       const docRef = await addDoc(collection(db, "routes"), newRouteData);
 
-      // Atualiza veículo para "em_rota" e KM atual
       await updateDoc(doc(db, "vehicles", vehicle.id), {
         status: "em_rota",
         currentKm: startKmNumber,
       });
 
-      // objeto para o estado (inclui id)
       const routeForState: RouteItem = {
         id: docRef.id,
         ...newRouteData,
@@ -303,7 +303,6 @@ export default function RotasPage() {
 
       setRoutes((prev) => [routeForState, ...prev]);
 
-      // Atualiza estado local do veículo
       setVehicles((prev) =>
         prev.map((v) =>
           v.id === vehicle.id
@@ -326,6 +325,8 @@ export default function RotasPage() {
   function abrirFinalizarRota(route: RouteItem) {
     setFinishingRoute(route);
     setEndKmInput(route.endKm != null ? String(route.endKm) : "");
+    setEndDestinoInput(route.destino ?? ""); // 👈 puxa destino para edição
+    setObsInput(route.observacoes ?? ""); // 👈 puxa observações se já tiver
     setErrorMsg("");
     setSuccessMsg("");
   }
@@ -363,9 +364,10 @@ export default function RotasPage() {
         endAt: nowIso,
         distanceKm: distance,
         status: "finalizada",
+        destino: endDestinoInput || null, // 👈 salva destino editado
+        observacoes: obsInput || null, // 👈 salva observações
       });
 
-      // Atualiza veículo correspondente
       if (finishingRoute.vehicleId) {
         await updateDoc(doc(db, "vehicles", finishingRoute.vehicleId), {
           currentKm: endKmNumber,
@@ -390,6 +392,8 @@ export default function RotasPage() {
                 endAt: nowIso,
                 distanceKm: distance,
                 status: "finalizada",
+                destino: endDestinoInput || null,
+                observacoes: obsInput || null,
               }
             : r
         )
@@ -398,6 +402,8 @@ export default function RotasPage() {
       setSuccessMsg("Rota finalizada com sucesso!");
       setFinishingRoute(null);
       setEndKmInput("");
+      setEndDestinoInput("");
+      setObsInput("");
     } catch (error) {
       console.error("Erro ao finalizar rota:", error);
       setErrorMsg("Erro ao finalizar rota. Tente novamente.");
@@ -617,10 +623,23 @@ export default function RotasPage() {
                 className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
               />
               <Input
-                placeholder="Destino (opcional)"
-                value={finishingRoute.destino ?? ""}
-                disabled
-                className="bg-neutral-950 border-neutral-800 text-gray-400"
+                placeholder="Destino (pode ajustar aqui)"
+                value={endDestinoInput}
+                onChange={(e) => setEndDestinoInput(e.target.value)}
+                className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
+              />
+            </div>
+
+            {/* Campo de observações */}
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Observações da rota (opcional)
+              </label>
+              <textarea
+                placeholder="Ex: Entrega concluída sem ocorrências, veículo retornou direto para a loja..."
+                value={obsInput}
+                onChange={(e) => setObsInput(e.target.value)}
+                className="w-full rounded-md bg-neutral-950 border border-neutral-700 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 resize-y min-h-[80px]"
               />
             </div>
 
@@ -648,6 +667,8 @@ export default function RotasPage() {
                 onClick={() => {
                   setFinishingRoute(null);
                   setEndKmInput("");
+                  setEndDestinoInput("");
+                  setObsInput("");
                   setErrorMsg("");
                   setSuccessMsg("");
                 }}
