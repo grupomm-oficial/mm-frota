@@ -9,6 +9,7 @@ import {
   Map,
   Fuel,
   Wrench,
+  BarChart3, // 👈 Ícone adicionado
 } from "lucide-react";
 import Image from "next/image";
 
@@ -71,23 +72,18 @@ export function AppSidebar() {
         </div>
       </div>
 
-      {/* NAV ROLA SE FALTAR ESPAÇO (MELHOR EM TELAS PEQUENAS) */}
+      {/* MENU */}
       <nav className="flex-1 flex flex-col gap-2 overflow-y-auto pr-1">
         <NavItem href="/dashboard" icon={LayoutDashboard} label="Dashboard" />
         <NavItem href="/admin/usuarios" icon={Users} label="Usuários" />
         <NavItem href="/veiculos" icon={Car} label="Veículos" />
         <NavItem href="/motoristas" icon={Users} label="Motoristas" />
         <NavItem href="/rotas" icon={Map} label="Rotas" />
-        <NavItem
-          href="/abastecimentos"
-          icon={Fuel}
-          label="Abastecimentos"
-        />
-        <NavItem
-          href="/manutencoes"
-          icon={Wrench}
-          label="Manutenções"
-        />
+        <NavItem href="/abastecimentos" icon={Fuel} label="Abastecimentos" />
+        <NavItem href="/manutencoes" icon={Wrench} label="Manutenções" />
+
+        {/* 🔥 NOVA ABA INSERIDA AQUI */}
+        <NavItem href="/relatorios" icon={BarChart3} label="Relatórios" />
       </nav>
 
       {/* RODAPÉ */}

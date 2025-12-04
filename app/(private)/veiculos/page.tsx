@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { db } from "@/lib/firebase";
 import {
   collection,
@@ -17,6 +17,15 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
+import {
+  Truck,
+  Search,
+  Filter,
+  Building2,
+  UserCircle2,
+  Wrench,
+  Route as RouteIcon,
+} from "lucide-react";
 
 type VehicleStatus = "disponivel" | "em_rota" | "manutencao";
 
@@ -37,6 +46,8 @@ interface SimpleUser {
   name: string;
   storeId: string;
 }
+
+type StatusFilter = VehicleStatus | "todos";
 
 export default function VeiculosPage() {
   const { user } = useAuth();
@@ -61,6 +72,11 @@ export default function VeiculosPage() {
   const [responsibleId, setResponsibleId] = useState("");
   const [currentKm, setCurrentKm] = useState("");
 
+  // filtros / busca
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("todos");
+  const [storeFilter, setStoreFilter] = useState<string>("todas");
+
   const isAdmin = user?.role === "admin";
 
   // Se não estiver logado, manda pro login
@@ -76,8 +92,9 @@ export default function VeiculosPage() {
     async function loadData() {
       try {
         setLoading(true);
+        setErrorMsg("");
 
-        // Admin vê todos os usuários (ativos ou não) para atribuir como responsável
+        // Admin vê todos os usuários para atribuir como responsável
         if (user?.role === "admin") {
           const usersSnap = await getDocs(collection(db, "users"));
           const usersList: SimpleUser[] = usersSnap.docs.map((d) => {
@@ -122,6 +139,14 @@ export default function VeiculosPage() {
             active: data.active ?? true,
           };
         });
+
+        // ordena por loja + placa
+        vList.sort((a, b) => {
+          const s = (a.storeId || "").localeCompare(b.storeId || "");
+          if (s !== 0) return s;
+          return (a.plate || "").localeCompare(b.plate || "");
+        });
+
         setVehicles(vList);
       } catch (error) {
         console.error("Erro ao carregar veículos:", error);
@@ -188,9 +213,11 @@ export default function VeiculosPage() {
       const kmNumber =
         currentKm.trim() === "" ? undefined : Number(currentKm.replace(",", "."));
 
+      const upperPlate = plate.toUpperCase().trim();
+
       // Criar doc em "vehicles"
       const docRef = await addDoc(collection(db, "vehicles"), {
-        plate: plate.toUpperCase(),
+        plate: upperPlate,
         model,
         storeId,
         responsibleUserId: responsibleUser.id,
@@ -205,7 +232,7 @@ export default function VeiculosPage() {
         ...prev,
         {
           id: docRef.id,
-          plate: plate.toUpperCase(),
+          plate: upperPlate,
           model,
           storeId,
           responsibleUserId: responsibleUser.id,
@@ -249,8 +276,10 @@ export default function VeiculosPage() {
       const kmNumber =
         currentKm.trim() === "" ? null : Number(currentKm.replace(",", "."));
 
+      const upperPlate = plate.toUpperCase().trim();
+
       await updateDoc(doc(db, "vehicles", editingVehicle.id), {
-        plate: plate.toUpperCase(),
+        plate: upperPlate,
         model,
         storeId,
         responsibleUserId: responsibleUser.id,
@@ -263,7 +292,7 @@ export default function VeiculosPage() {
           v.id === editingVehicle.id
             ? {
                 ...v,
-                plate: plate.toUpperCase(),
+                plate: upperPlate,
                 model,
                 storeId,
                 responsibleUserId: responsibleUser.id,
@@ -310,63 +339,180 @@ export default function VeiculosPage() {
     }
   }
 
-  // Métricas simples para ajudar o usuário
+  // Opções de loja para filtro
+  const storeOptions = useMemo(() => {
+    const set = new Set<string>();
+    vehicles.forEach((v) => {
+      if (v.storeId) set.add(v.storeId);
+    });
+    return Array.from(set).sort();
+  }, [vehicles]);
+
+  // Filtro/busca em memória
+  const filteredVehicles = useMemo(() => {
+    let list = [...vehicles];
+
+    // filtro por status
+    if (statusFilter !== "todos") {
+      list = list.filter((v) => v.status === statusFilter);
+    }
+
+    // filtro por loja
+    if (storeFilter !== "todas") {
+      list = list.filter((v) => v.storeId === storeFilter);
+    }
+
+    // busca por texto
+    if (searchTerm.trim()) {
+      const term = searchTerm.trim().toLowerCase();
+      list = list.filter((v) => {
+        return (
+          v.plate.toLowerCase().includes(term) ||
+          v.model.toLowerCase().includes(term) ||
+          (v.storeId || "").toLowerCase().includes(term) ||
+          (v.responsibleUserName || "").toLowerCase().includes(term)
+        );
+      });
+    }
+
+    return list;
+  }, [vehicles, searchTerm, statusFilter, storeFilter]);
+
+  // Métricas simples
   const totalVeiculos = vehicles.length;
   const disponiveis = vehicles.filter((v) => v.status === "disponivel").length;
   const emRota = vehicles.filter((v) => v.status === "em_rota").length;
-  const emManutencao = vehicles.filter(
-    (v) => v.status === "manutencao"
-  ).length;
+  const emManutencao = vehicles.filter((v) => v.status === "manutencao").length;
+
+  // helpers UI
+  const statusChipClasses = (target: StatusFilter) =>
+    `px-3 py-1 rounded-full border text-xs cursor-pointer transition ${
+      statusFilter === target
+        ? "bg-yellow-500 text-black border-yellow-400"
+        : "bg-neutral-900 text-gray-200 border-neutral-700 hover:bg-neutral-800"
+    }`;
 
   return (
     <div className="space-y-6">
       {/* Cabeçalho */}
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-yellow-400">
-            Veículos do Grupo MM
-          </h1>
-          <p className="text-sm text-gray-400">
-            Cadastre e gerencie os veículos da frota. O motorista é escolhido
-            na hora de iniciar a rota.
+          <div className="flex items-center gap-2 mb-1">
+            <div className="p-2 rounded-full bg-yellow-500/10">
+              <Truck className="w-5 h-5 text-yellow-400" />
+            </div>
+            <h1 className="text-2xl font-bold text-yellow-400">
+              Veículos do Grupo MM
+            </h1>
+          </div>
+          <p className="text-sm text-gray-400 max-w-xl">
+            Cadastre, gerencie e acompanhe os veículos da frota. Os detalhes
+            alimentam rotas, abastecimentos e relatórios mensais.
           </p>
         </div>
 
-        {isAdmin && (
-          <Button
-            className="bg-yellow-500 hover:bg-yellow-400 text-black font-semibold"
-            onClick={abrirFormNovo}
-          >
-            + Novo veículo
-          </Button>
-        )}
+        <div className="flex flex-col gap-2 md:items-end">
+          {/* Busca rápida */}
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Input
+                placeholder="Buscar por placa, modelo, loja ou responsável..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-72 bg-neutral-900 border-neutral-700 text-gray-100 placeholder:text-gray-500 text-sm pr-9"
+              />
+              <Search className="w-4 h-4 text-gray-500 absolute right-2.5 top-1/2 -translate-y-1/2" />
+            </div>
+            {isAdmin && (
+              <Button
+                className="bg-yellow-500 hover:bg-yellow-400 text-black font-semibold text-sm"
+                onClick={abrirFormNovo}
+              >
+                + Novo veículo
+              </Button>
+            )}
+          </div>
+          {(searchTerm.trim() || statusFilter !== "todos" || storeFilter !== "todas") && (
+            <span className="text-[11px] text-gray-400">
+              Mostrando {filteredVehicles.length} de {totalVeiculos} veículo(s).
+            </span>
+          )}
+        </div>
       </div>
 
-      {/* Resumo rápido */}
-      <Card className="p-4 bg-neutral-950 border border-neutral-800">
+      {/* Resumo rápido + filtros de status/loja */}
+      <Card className="p-4 bg-neutral-950 border border-neutral-800 space-y-3">
+        {/* Chips resumo (clicáveis) */}
         <div className="flex flex-wrap gap-3 text-xs text-gray-300">
-          <span className="px-3 py-1 rounded-full bg-neutral-900 border border-neutral-700">
+          <button
+            type="button"
+            className={statusChipClasses("todos")}
+            onClick={() => setStatusFilter("todos")}
+          >
             Total:{" "}
-            <span className="font-semibold text-yellow-400">
+            <span className="font-semibold ml-1 text-yellow-400">
               {totalVeiculos}
             </span>
-          </span>
-          <span className="px-3 py-1 rounded-full bg-neutral-900 border border-neutral-700">
+          </button>
+
+          <button
+            type="button"
+            className={statusChipClasses("disponivel")}
+            onClick={() => setStatusFilter("disponivel")}
+          >
             Disponíveis:{" "}
-            <span className="font-semibold text-green-400">
+            <span className="font-semibold ml-1 text-green-400">
               {disponiveis}
             </span>
-          </span>
-          <span className="px-3 py-1 rounded-full bg-neutral-900 border border-neutral-700">
+          </button>
+
+          <button
+            type="button"
+            className={statusChipClasses("em_rota")}
+            onClick={() => setStatusFilter("em_rota")}
+          >
             Em rota:{" "}
-            <span className="font-semibold text-sky-400">{emRota}</span>
-          </span>
-          <span className="px-3 py-1 rounded-full bg-neutral-900 border border-neutral-700">
+            <span className="font-semibold ml-1 text-sky-400">
+              {emRota}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            className={statusChipClasses("manutencao")}
+            onClick={() => setStatusFilter("manutencao")}
+          >
             Em manutenção:{" "}
-            <span className="font-semibold text-yellow-300">
+            <span className="font-semibold ml-1 text-yellow-300">
               {emManutencao}
             </span>
-          </span>
+          </button>
+        </div>
+
+        {/* Filtro por loja */}
+        <div className="flex flex-wrap items-center gap-3 text-xs text-gray-300">
+          <div className="flex items-center gap-2">
+            <Filter className="w-4 h-4 text-gray-500" />
+            <span className="text-[11px] text-gray-400">
+              Filtros rápidos
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Building2 className="w-4 h-4 text-gray-500" />
+            <select
+              className="rounded-md bg-neutral-900 border border-neutral-700 px-3 py-1.5 text-xs text-gray-100"
+              value={storeFilter}
+              onChange={(e) => setStoreFilter(e.target.value)}
+            >
+              <option value="todas">Todas as lojas</option>
+              {storeOptions.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </Card>
 
@@ -374,9 +520,12 @@ export default function VeiculosPage() {
       {isAdmin && formOpen && (
         <Card className="p-4 bg-neutral-900 border border-neutral-800">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-lg font-semibold text-yellow-400">
-              {editingVehicle ? "Editar veículo" : "Novo veículo"}
-            </h2>
+            <div className="flex items-center gap-2">
+              <Wrench className="w-4 h-4 text-yellow-400" />
+              <h2 className="text-lg font-semibold text-yellow-400">
+                {editingVehicle ? "Editar veículo" : "Novo veículo"}
+              </h2>
+            </div>
             {editingVehicle && (
               <span className="text-[11px] px-2 py-[2px] rounded-full bg-neutral-800 border border-neutral-700 text-gray-300">
                 ID: {editingVehicle.id}
@@ -406,7 +555,8 @@ export default function VeiculosPage() {
               />
 
               <div>
-                <label className="block text-xs text-gray-400 mb-1">
+                <label className="block text-xs text-gray-400 mb-1 flex items-center gap-1">
+                  <UserCircle2 className="w-3 h-3 text-gray-400" />
                   Responsável pelo veículo
                 </label>
                 <select
@@ -472,14 +622,25 @@ export default function VeiculosPage() {
 
       {/* Lista de veículos */}
       <Card className="p-4 bg-neutral-900 border border-neutral-800">
-        <h2 className="text-lg font-semibold text-gray-100 mb-3">
-          Veículos cadastrados
-        </h2>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <RouteIcon className="w-4 h-4 text-yellow-400" />
+            <h2 className="text-lg font-semibold text-gray-100">
+              Veículos cadastrados
+            </h2>
+          </div>
+          {!loading && (
+            <span className="text-[11px] text-gray-400">
+              {filteredVehicles.length} veículo(s) exibidos
+            </span>
+          )}
+        </div>
+
         {loading ? (
           <p className="text-sm text-gray-400">Carregando veículos...</p>
-        ) : vehicles.length === 0 ? (
+        ) : filteredVehicles.length === 0 ? (
           <p className="text-sm text-gray-400">
-            Nenhum veículo cadastrado ainda.
+            Nenhum veículo encontrado com os filtros atuais.
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -492,19 +653,22 @@ export default function VeiculosPage() {
                   <th className="py-2 px-2">Responsável</th>
                   <th className="py-2 px-2">Status</th>
                   <th className="py-2 px-2">KM atual</th>
-                  {isAdmin && (
-                    <th className="py-2 pl-2 text-right">Ações</th>
-                  )}
+                  <th className="py-2 pl-2 text-right">Ações</th>
                 </tr>
               </thead>
               <tbody>
-                {vehicles.map((v) => (
+                {filteredVehicles.map((v) => (
                   <tr
                     key={v.id}
                     className="border-b border-neutral-900 hover:bg-neutral-800/60"
                   >
                     <td className="py-2 pr-2 font-mono text-gray-100">
                       {v.plate}
+                      {!v.active && (
+                        <span className="ml-2 text-[10px] px-2 py-[1px] rounded-full bg-neutral-800 text-gray-400 border border-neutral-700">
+                          Inativo
+                        </span>
+                      )}
                     </td>
                     <td className="py-2 px-2 text-gray-200">{v.model}</td>
                     <td className="py-2 px-2 text-gray-200">{v.storeId}</td>
@@ -532,34 +696,39 @@ export default function VeiculosPage() {
                       {v.currentKm != null ? `${v.currentKm} km` : "-"}
                     </td>
 
-                    {isAdmin && (
-                      <td className="py-2 pl-2 text-right">
-                        <div className="flex justify-end gap-2">
-                          <Button
-                            size="sm"
-                            className="bg-neutral-800 hover:bg-neutral-700 text-yellow-300 border border-yellow-500/40 text-xs h-7 px-3"
-                            onClick={() => handleVerDetalhes(v)}
-                          >
-                            Detalhes
-                          </Button>
-                          <Button
-                            size="sm"
-                            className="bg-yellow-500 hover:bg-yellow-400 text-black text-xs h-7 px-3"
-                            onClick={() => abrirFormEdicao(v)}
-                          >
-                            Editar
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="border-red-500 text-red-300 hover:bg-red-500/10 text-xs h-7 px-3"
-                            onClick={() => handleDeleteVehicle(v)}
-                          >
-                            Excluir
-                          </Button>
-                        </div>
-                      </td>
-                    )}
+                    <td className="py-2 pl-2 text-right">
+                      <div className="flex justify-end gap-2">
+                        {/* Detalhes – disponível para TODOS os perfis */}
+                        <Button
+                          size="sm"
+                          className="bg-neutral-800 hover:bg-neutral-700 text-yellow-300 border border-yellow-500/40 text-xs h-7 px-3"
+                          onClick={() => handleVerDetalhes(v)}
+                        >
+                          Detalhes
+                        </Button>
+
+                        {/* Ações extras apenas para admin */}
+                        {isAdmin && (
+                          <>
+                            <Button
+                              size="sm"
+                              className="bg-yellow-500 hover:bg-yellow-400 text-black text-xs h-7 px-3"
+                              onClick={() => abrirFormEdicao(v)}
+                            >
+                              Editar
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="border-red-500 text-red-300 hover:bg-red-500/10 text-xs h-7 px-3"
+                              onClick={() => handleDeleteVehicle(v)}
+                            >
+                              Excluir
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
