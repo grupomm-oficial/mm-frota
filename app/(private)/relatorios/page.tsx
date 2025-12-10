@@ -94,6 +94,21 @@ interface MonthlySummary {
   createdAt?: string | null;
 }
 
+interface VehicleOption {
+  id: string;
+  plate: string;
+  model: string;
+  storeId?: string;
+  currentKm?: number;
+
+  // modelo antigo
+  responsibleUserId?: string;
+  responsibleUserName?: string;
+
+  // modelo novo (multi-responsável)
+  responsibleUserIds?: string[];
+}
+
 type ReportTab = "geral" | "veiculos" | "motoristas";
 
 export default function RelatoriosPage() {
@@ -107,6 +122,7 @@ export default function RelatoriosPage() {
   const [monthlySummaries, setMonthlySummaries] = useState<MonthlySummary[]>(
     []
   );
+  const [vehicles, setVehicles] = useState<VehicleOption[]>([]);
 
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
@@ -117,7 +133,8 @@ export default function RelatoriosPage() {
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
 
-  const [initializedDefaultRange, setInitializedDefaultRange] = useState(false);
+  const [initializedDefaultRange, setInitializedDefaultRange] =
+    useState(false);
   const [closingMonth, setClosingMonth] = useState(false);
 
   const isAdmin = user?.role === "admin";
@@ -128,6 +145,17 @@ export default function RelatoriosPage() {
       router.replace("/login");
     }
   }, [user, router]);
+
+  // helper: verifica se o usuário pode usar / ver um veículo
+  function userCanUseVehicle(vehicle: VehicleOption): boolean {
+    if (!user) return false;
+    if (user.role === "admin") return true;
+
+    const singleMatch = vehicle.responsibleUserId === user.id;
+    const multiMatch = vehicle.responsibleUserIds?.includes(user.id) ?? false;
+
+    return singleMatch || multiMatch;
+  }
 
   // Define automaticamente o mês atual nos filtros na primeira carga
   useEffect(() => {
@@ -150,7 +178,7 @@ export default function RelatoriosPage() {
     setInitializedDefaultRange(true);
   }, [initializedDefaultRange]);
 
-  // Carregar rotas + abastecimentos + manutenções + fechamentos
+  // Carregar veículos + rotas + abastecimentos + manutenções + fechamentos
   useEffect(() => {
     async function loadData() {
       if (!user) return;
@@ -159,20 +187,36 @@ export default function RelatoriosPage() {
         setErrorMsg("");
         setSuccessMsg("");
 
-        // ROTAS
-        let routesSnap;
-        if (isAdmin) {
-          routesSnap = await getDocs(collection(db, "routes"));
-        } else {
-          routesSnap = await getDocs(
-            query(
-              collection(db, "routes"),
-              where("responsibleUserId", "==", user.id)
-            )
-          );
-        }
+        // ===== VEÍCULOS =====
+        const vehiclesSnap = await getDocs(collection(db, "vehicles"));
+        const vListAll: VehicleOption[] = vehiclesSnap.docs.map((d) => {
+          const data = d.data() as any;
+          return {
+            id: d.id,
+            plate: data.plate,
+            model: data.model,
+            storeId: data.storeId,
+            currentKm: data.currentKm,
+            responsibleUserId: data.responsibleUserId,
+            responsibleUserName: data.responsibleUserName,
+            responsibleUserIds: Array.isArray(data.responsibleUserIds)
+              ? data.responsibleUserIds
+              : undefined,
+          };
+        });
 
-        const rList: RouteItem[] = routesSnap.docs.map((d) => {
+        const vehicleById = new Map<string, VehicleOption>();
+        vListAll.forEach((v) => vehicleById.set(v.id, v));
+
+        let vList = vListAll;
+        if (!isAdmin) {
+          vList = vListAll.filter((v) => userCanUseVehicle(v));
+        }
+        setVehicles(vList);
+
+        // ===== ROTAS =====
+        const routesSnap = await getDocs(collection(db, "routes"));
+        const rAll: RouteItem[] = routesSnap.docs.map((d) => {
           const data = d.data() as any;
           return {
             id: d.id,
@@ -191,22 +235,19 @@ export default function RelatoriosPage() {
           };
         });
 
+        let rList = rAll;
+        if (!isAdmin) {
+          rList = rAll.filter((r) => {
+            if (r.responsibleUserId === user.id) return true;
+            const v = vehicleById.get(r.vehicleId);
+            return v ? userCanUseVehicle(v) : false;
+          });
+        }
         setRoutes(rList);
 
-        // ABASTECIMENTOS (fuelings)
-        let refuelSnap;
-        if (isAdmin) {
-          refuelSnap = await getDocs(collection(db, "fuelings"));
-        } else {
-          refuelSnap = await getDocs(
-            query(
-              collection(db, "fuelings"),
-              where("responsibleUserId", "==", user.id)
-            )
-          );
-        }
-
-        const fList: RefuelItem[] = refuelSnap.docs.map((d) => {
+        // ===== ABASTECIMENTOS (fuelings) =====
+        const refuelSnap = await getDocs(collection(db, "fuelings"));
+        const fAll: RefuelItem[] = refuelSnap.docs.map((d) => {
           const data = d.data() as any;
           return {
             id: d.id,
@@ -222,22 +263,19 @@ export default function RelatoriosPage() {
           };
         });
 
+        let fList = fAll;
+        if (!isAdmin) {
+          fList = fAll.filter((f) => {
+            if (f.responsibleUserId === user.id) return true;
+            const v = vehicleById.get(f.vehicleId);
+            return v ? userCanUseVehicle(v) : false;
+          });
+        }
         setRefuels(fList);
 
-        // MANUTENÇÕES (maintenances)
-        let maintSnap;
-        if (isAdmin) {
-          maintSnap = await getDocs(collection(db, "maintenances"));
-        } else {
-          maintSnap = await getDocs(
-            query(
-              collection(db, "maintenances"),
-              where("responsibleUserId", "==", user.id)
-            )
-          );
-        }
-
-        const mList: MaintenanceItem[] = maintSnap.docs.map((d) => {
+        // ===== MANUTENÇÕES (maintenances) =====
+        const maintSnap = await getDocs(collection(db, "maintenances"));
+        const mAll: MaintenanceItem[] = maintSnap.docs.map((d) => {
           const data = d.data() as any;
           return {
             id: d.id,
@@ -255,9 +293,17 @@ export default function RelatoriosPage() {
           };
         });
 
+        let mList = mAll;
+        if (!isAdmin) {
+          mList = mAll.filter((m) => {
+            if (m.responsibleUserId === user.id) return true;
+            const v = vehicleById.get(m.vehicleId);
+            return v ? userCanUseVehicle(v) : false;
+          });
+        }
         setMaintenances(mList);
 
-        // FECHAMENTOS MENSAIS SALVOS (apenas admin)
+        // ===== FECHAMENTOS MENSAIS SALVOS (apenas admin) =====
         if (isAdmin) {
           const msSnap = await getDocs(collection(db, "monthlySummaries"));
           const msList: MonthlySummary[] = msSnap.docs
@@ -289,6 +335,8 @@ export default function RelatoriosPage() {
             });
 
           setMonthlySummaries(msList);
+        } else {
+          setMonthlySummaries([]);
         }
       } catch (error) {
         console.error("Erro ao carregar dados de relatórios:", error);

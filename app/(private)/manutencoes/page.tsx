@@ -10,7 +10,6 @@ import {
   deleteDoc,
   doc,
   query,
-  where,
   orderBy,
 } from "firebase/firestore";
 import { useAuth } from "@/context/AuthContext";
@@ -26,9 +25,14 @@ interface VehicleOption {
   plate: string;
   model: string;
   storeId: string;
-  responsibleUserId: string;
-  responsibleUserName: string;
   currentKm?: number;
+
+  // modelo antigo (um responsável)
+  responsibleUserId?: string;
+  responsibleUserName?: string;
+
+  // modelo novo (vários responsáveis)
+  responsibleUserIds?: string[];
 }
 
 interface Maintenance {
@@ -85,6 +89,17 @@ export default function ManutencoesPage() {
     }
   }, [user, router]);
 
+  // helper: verifica se o usuário pode usar / ver um veículo
+  function userCanUseVehicle(vehicle: VehicleOption): boolean {
+    if (!user) return false;
+    if (user.role === "admin") return true;
+
+    const singleMatch = vehicle.responsibleUserId === user.id;
+    const multiMatch = vehicle.responsibleUserIds?.includes(user.id) ?? false;
+
+    return singleMatch || multiMatch;
+  }
+
   // Define período padrão = mês corrente
   useEffect(() => {
     const now = new Date();
@@ -112,48 +127,34 @@ export default function ManutencoesPage() {
         setLoading(true);
         setErrorMsg("");
 
-        // Veículos acessíveis
-        let vehiclesSnap;
-        if (isAdmin) {
-          vehiclesSnap = await getDocs(collection(db, "vehicles"));
-        } else {
-          vehiclesSnap = await getDocs(
-            query(
-              collection(db, "vehicles"),
-              where("responsibleUserId", "==", user.id)
-            )
-          );
-        }
-
-        const vList: VehicleOption[] = vehiclesSnap.docs.map((d) => {
+        // ===== VEÍCULOS ACESSÍVEIS =====
+        const vehiclesSnap = await getDocs(collection(db, "vehicles"));
+        const vListAll: VehicleOption[] = vehiclesSnap.docs.map((d) => {
           const data = d.data() as any;
           return {
             id: d.id,
             plate: data.plate,
             model: data.model,
             storeId: data.storeId,
+            currentKm: data.currentKm,
             responsibleUserId: data.responsibleUserId,
             responsibleUserName: data.responsibleUserName,
-            currentKm: data.currentKm,
+            responsibleUserIds: Array.isArray(data.responsibleUserIds)
+              ? data.responsibleUserIds
+              : undefined,
           };
         });
+
+        let vList = vListAll;
+        if (!isAdmin) {
+          vList = vListAll.filter((v) => userCanUseVehicle(v));
+        }
         setVehicles(vList);
 
-        // Manutenções
-        let maintSnap;
-        if (isAdmin) {
-          maintSnap = await getDocs(
-            query(collection(db, "maintenances"), orderBy("date", "desc"))
-          );
-        } else {
-          // user comum: só dele (sem orderBy pra evitar índice)
-          maintSnap = await getDocs(
-            query(
-              collection(db, "maintenances"),
-              where("responsibleUserId", "==", user.id)
-            )
-          );
-        }
+        // ===== MANUTENÇÕES =====
+        const maintSnap = await getDocs(
+          query(collection(db, "maintenances"), orderBy("date", "desc"))
+        );
 
         let mList: Maintenance[] = maintSnap.docs.map((d) => {
           const data = d.data() as any;
@@ -177,10 +178,13 @@ export default function ManutencoesPage() {
           };
         });
 
-        // se não for admin, ordena manual por data desc
         if (!isAdmin) {
-          mList = mList.sort((a, b) =>
-            (b.date || "").localeCompare(a.date || "")
+          const allowedVehicleIds = new Set(vList.map((v) => v.id));
+
+          mList = mList.filter(
+            (m) =>
+              m.responsibleUserId === user.id ||
+              allowedVehicleIds.has(m.vehicleId)
           );
         }
 
@@ -234,6 +238,14 @@ export default function ManutencoesPage() {
       const vehicle = vehicles.find((v) => v.id === vehicleId);
       if (!vehicle) {
         setErrorMsg("Veículo inválido.");
+        return;
+      }
+
+      // Permissão: precisa ser admin ou responsável pelo veículo
+      if (!userCanUseVehicle(vehicle)) {
+        setErrorMsg(
+          "Você não tem permissão para registrar manutenção para este veículo."
+        );
         return;
       }
 
@@ -325,6 +337,23 @@ export default function ManutencoesPage() {
 
   async function handleConcluirManutencao(m: Maintenance) {
     try {
+      if (!user) {
+        alert("Sessão expirada. Faça login novamente.");
+        router.replace("/login");
+        return;
+      }
+
+      // Permissão: admin ou responsável/co-responsável do veículo
+      if (!isAdmin) {
+        const vehicle = vehicles.find((v) => v.id === m.vehicleId);
+        if (!vehicle || !userCanUseVehicle(vehicle)) {
+          alert(
+            "Você não tem permissão para concluir a manutenção deste veículo."
+          );
+          return;
+        }
+      }
+
       const resposta = window.prompt(
         `KM final para concluir a manutenção do veículo ${m.vehiclePlate}:`,
         m.odometerKm.toString()

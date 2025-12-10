@@ -10,7 +10,6 @@ import {
   deleteDoc,
   doc,
   query,
-  where,
   orderBy,
 } from "firebase/firestore";
 import { useAuth } from "@/context/AuthContext";
@@ -24,9 +23,14 @@ interface VehicleOption {
   plate: string;
   model: string;
   storeId: string;
-  responsibleUserId: string;
-  responsibleUserName: string;
   currentKm?: number;
+
+  // modelo antigo (um responsável)
+  responsibleUserId?: string;
+  responsibleUserName?: string;
+
+  // modelo novo (vários responsáveis)
+  responsibleUserIds?: string[];
 }
 
 interface Fueling {
@@ -79,6 +83,17 @@ export default function AbastecimentosPage() {
     }
   }, [user, router]);
 
+  // helper: verifica se o usuário pode usar / ver um veículo
+  function userCanUseVehicle(vehicle: VehicleOption): boolean {
+    if (!user) return false;
+    if (user.role === "admin") return true;
+
+    const singleMatch = vehicle.responsibleUserId === user.id;
+    const multiMatch = vehicle.responsibleUserIds?.includes(user.id) ?? false;
+
+    return singleMatch || multiMatch;
+  }
+
   // Define período padrão = mês corrente
   useEffect(() => {
     const now = new Date();
@@ -106,48 +121,34 @@ export default function AbastecimentosPage() {
         setLoading(true);
         setErrorMsg("");
 
-        // Carregar veículos que o usuário pode usar
-        let vehiclesSnap;
-        if (isAdmin) {
-          vehiclesSnap = await getDocs(collection(db, "vehicles"));
-        } else {
-          vehiclesSnap = await getDocs(
-            query(
-              collection(db, "vehicles"),
-              where("responsibleUserId", "==", user.id)
-            )
-          );
-        }
-
-        const vList: VehicleOption[] = vehiclesSnap.docs.map((d) => {
+        // ===== VEÍCULOS =====
+        const vehiclesSnap = await getDocs(collection(db, "vehicles"));
+        let vListAll: VehicleOption[] = vehiclesSnap.docs.map((d) => {
           const data = d.data() as any;
           return {
             id: d.id,
             plate: data.plate,
             model: data.model,
             storeId: data.storeId,
+            currentKm: data.currentKm,
             responsibleUserId: data.responsibleUserId,
             responsibleUserName: data.responsibleUserName,
-            currentKm: data.currentKm,
+            responsibleUserIds: Array.isArray(data.responsibleUserIds)
+              ? data.responsibleUserIds
+              : undefined,
           };
         });
+
+        let vList = vListAll;
+        if (!isAdmin) {
+          vList = vListAll.filter((v) => userCanUseVehicle(v));
+        }
         setVehicles(vList);
 
-        // Carregar abastecimentos
-        let fuelingsSnap;
-        if (isAdmin) {
-          fuelingsSnap = await getDocs(
-            query(collection(db, "fuelings"), orderBy("date", "desc"))
-          );
-        } else {
-          // user comum: pega só registros dele (sem orderBy pra evitar problema de índice)
-          fuelingsSnap = await getDocs(
-            query(
-              collection(db, "fuelings"),
-              where("responsibleUserId", "==", user.id)
-            )
-          );
-        }
+        // ===== ABASTECIMENTOS =====
+        const fuelingsSnap = await getDocs(
+          query(collection(db, "fuelings"), orderBy("date", "desc"))
+        );
 
         let fList: Fueling[] = fuelingsSnap.docs.map((d) => {
           const data = d.data() as any;
@@ -168,10 +169,13 @@ export default function AbastecimentosPage() {
           };
         });
 
-        // Para user comum, ordena manualmente pela data desc
         if (!isAdmin) {
-          fList = fList.sort((a, b) =>
-            (b.date || "").localeCompare(a.date || "")
+          const allowedVehicleIds = new Set(vList.map((v) => v.id));
+
+          fList = fList.filter(
+            (f) =>
+              f.responsibleUserId === user.id ||
+              allowedVehicleIds.has(f.vehicleId)
           );
         }
 
@@ -224,6 +228,14 @@ export default function AbastecimentosPage() {
       const vehicle = vehicles.find((v) => v.id === vehicleId);
       if (!vehicle) {
         setErrorMsg("Veículo inválido.");
+        return;
+      }
+
+      // Permissão: precisa ser admin ou responsável pelo veículo
+      if (!userCanUseVehicle(vehicle)) {
+        setErrorMsg(
+          "Você não tem permissão para registrar abastecimento para este veículo."
+        );
         return;
       }
 
@@ -345,13 +357,11 @@ export default function AbastecimentosPage() {
 
       if (startFilter) {
         const start = parseLocalDate(startFilter);
-        // start já está em 00:00 do dia
         if (d < start) return false;
       }
 
       if (endFilter) {
         const end = parseLocalDate(endFilter);
-        // inclui o dia inteiro
         end.setHours(23, 59, 59, 999);
         if (d > end) return false;
       }
@@ -388,7 +398,7 @@ export default function AbastecimentosPage() {
   function formatFilterDateLabel(dateStr: string) {
     if (!dateStr) return "";
     const [yyyy, mm, dd] = dateStr.split("-").map(Number);
-    const d = new Date(yyyy, (mm || 1) - 1, dd || 1); // data local
+    const d = new Date(yyyy, (mm || 1) - 1, dd || 1);
     return d.toLocaleDateString("pt-BR");
   }
 

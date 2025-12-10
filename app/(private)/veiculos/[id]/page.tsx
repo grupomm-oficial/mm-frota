@@ -4,7 +4,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { db } from "@/lib/firebase";
 import {
-  doc,
+  doc as fsDoc,
   getDoc,
   collection,
   getDocs,
@@ -57,6 +57,12 @@ ChartJS.register(
 
 type VehicleStatus = "disponivel" | "em_rota" | "manutencao";
 
+interface VehicleResponsibleUser {
+  id: string;
+  name: string;
+  storeId?: string;
+}
+
 interface Vehicle {
   id: string;
   plate: string;
@@ -64,8 +70,15 @@ interface Vehicle {
   storeId: string;
   status: VehicleStatus;
   currentKm?: number;
-  responsibleUserId: string;
-  responsibleUserName: string;
+
+  // CAMPOS ANTIGOS (compatibilidade)
+  responsibleUserId?: string;
+  responsibleUserName?: string;
+
+  // NOVOS CAMPOS: múltiplos responsáveis
+  responsibleUserIds: string[];
+  responsibleUsers: VehicleResponsibleUser[];
+
   generalNotes?: string | null;
 }
 
@@ -177,7 +190,7 @@ export default function VehicleDetailsPage() {
 
       // 1) Veículo
       try {
-        const vehicleRef = doc(db, "vehicles", params.id);
+        const vehicleRef = fsDoc(db, "vehicles", params.id);
         const vehicleSnap = await getDoc(vehicleRef);
 
         if (!vehicleSnap.exists()) {
@@ -194,6 +207,30 @@ export default function VehicleDetailsPage() {
           vData.observacoesGerais ??
           null;
 
+        // Compatibilidade de responsáveis
+        const responsibleUsersFromDoc: VehicleResponsibleUser[] =
+          Array.isArray(vData.responsibleUsers) && vData.responsibleUsers.length
+            ? vData.responsibleUsers
+            : vData.responsibleUserId && vData.responsibleUserName
+            ? [
+                {
+                  id: vData.responsibleUserId,
+                  name: vData.responsibleUserName,
+                  storeId: vData.storeId,
+                },
+              ]
+            : [];
+
+        const responsibleUserIdsFromDoc: string[] =
+          Array.isArray(vData.responsibleUserIds) &&
+          vData.responsibleUserIds.length
+            ? vData.responsibleUserIds
+            : responsibleUsersFromDoc.map((u) => u.id);
+
+        const primaryName =
+          vData.responsibleUserName ||
+          (responsibleUsersFromDoc[0]?.name ?? "");
+
         const vehicleObj: Vehicle = {
           id: vehicleSnap.id,
           plate: vData.plate,
@@ -201,16 +238,29 @@ export default function VehicleDetailsPage() {
           storeId: vData.storeId,
           status: vData.status ?? "disponivel",
           currentKm: vData.currentKm,
+          // antigos
           responsibleUserId: vData.responsibleUserId,
-          responsibleUserName: vData.responsibleUserName,
+          responsibleUserName: primaryName,
+          // novos
+          responsibleUserIds: responsibleUserIdsFromDoc,
+          responsibleUsers: responsibleUsersFromDoc,
           generalNotes: generalNotesFromDb,
         };
 
-        // segurança: user comum só vê se for responsável
-        if (user.role !== "admin" && vehicleObj.responsibleUserId !== user.id) {
-          setErrorMsg("Você não tem acesso a este veículo.");
-          setLoading(false);
-          return;
+        // segurança: user comum só vê se for um dos responsáveis
+        if (user.role !== "admin") {
+          const isExplicitResponsible =
+            !!vehicleObj.responsibleUserId &&
+            vehicleObj.responsibleUserId === user.id;
+
+          const isInMultiResponsibles =
+            vehicleObj.responsibleUserIds?.includes(user.id) ?? false;
+
+          if (!isExplicitResponsible && !isInMultiResponsibles) {
+            setErrorMsg("Você não tem acesso a este veículo.");
+            setLoading(false);
+            return;
+          }
         }
 
         setVehicle(vehicleObj);
@@ -426,10 +476,35 @@ export default function VehicleDetailsPage() {
       ? "Em rota"
       : "Em manutenção";
 
+  // Nome do responsável principal + contador de co-responsáveis
+  const primaryResponsibleName = useMemo(() => {
+    if (!vehicle) return "";
+    if (vehicle.responsibleUserName) return vehicle.responsibleUserName;
+    if (vehicle.responsibleUsers && vehicle.responsibleUsers.length > 0) {
+      return vehicle.responsibleUsers[0].name;
+    }
+    return "";
+  }, [vehicle]);
+
+  const otherResponsiblesCount = useMemo(() => {
+    if (!vehicle || !vehicle.responsibleUsers) return 0;
+    return Math.max(0, vehicle.responsibleUsers.length - 1);
+  }, [vehicle]);
+
+  const responsaveisLabel = useMemo(() => {
+    if (!primaryResponsibleName) return "-";
+    if (otherResponsiblesCount === 0) return primaryResponsibleName;
+    if (otherResponsiblesCount === 1)
+      return `${primaryResponsibleName} + 1 co-responsável`;
+    return `${primaryResponsibleName} + ${otherResponsiblesCount} co-responsáveis`;
+  }, [primaryResponsibleName, otherResponsiblesCount]);
+
   const canEditGeneralNotes =
     !!user &&
     !!vehicle &&
-    (user.role === "admin" || user.id === vehicle.responsibleUserId);
+    (user.role === "admin" ||
+      vehicle.responsibleUserIds?.includes(user.id) ||
+      (!!vehicle.responsibleUserId && vehicle.responsibleUserId === user.id));
 
   // ===== PDF =====
   async function handleGeneratePdf() {
@@ -522,10 +597,23 @@ export default function VehicleDetailsPage() {
       );
       currentY += 5;
 
+      const responsaveisPdfLabel = (() => {
+        if (!vehicle.responsibleUsers || vehicle.responsibleUsers.length === 0) {
+          return vehicle.responsibleUserName || "-";
+        }
+        const names = vehicle.responsibleUsers.map((u) => u.name);
+        return names.join(", ");
+      })();
+
       docPdf.text(
-        `Responsável: ${vehicle.responsibleUserName}   |   KM atual (aprox.): ${
-          vehicle.currentKm ?? "-"
-        } km`,
+        `Responsáveis: ${responsaveisPdfLabel}`,
+        marginLeft,
+        currentY
+      );
+      currentY += 5;
+
+      docPdf.text(
+        `KM atual (aprox.): ${vehicle.currentKm ?? "-"} km`,
         marginLeft,
         currentY
       );
@@ -702,7 +790,7 @@ export default function VehicleDetailsPage() {
 
       const nowIso = new Date().toISOString();
 
-      await updateDoc(doc(db, "vehicles", vehicle.id), {
+      await updateDoc(fsDoc(db, "vehicles", vehicle.id), {
         vehicleNotes: generalNotesDraft.trim() || null,
         updatedVehicleNotesAt: nowIso,
         updatedVehicleNotesById: user.id,
@@ -778,10 +866,8 @@ export default function VehicleDetailsPage() {
               </span>
               <span className="inline-flex items-center gap-1 text-gray-400">
                 <Info className="w-3 h-3" />
-                Responsável:{" "}
-                <span className="text-gray-100">
-                  {vehicle.responsibleUserName}
-                </span>
+                {otherResponsiblesCount > 0 ? "Responsáveis:" : "Responsável:"}{" "}
+                <span className="text-gray-100">{responsaveisLabel}</span>
                 {vehicle.currentKm != null && (
                   <>
                     <span className="mx-1 text-gray-500">•</span>
@@ -896,10 +982,10 @@ export default function VehicleDetailsPage() {
                   {statusText}
                 </p>
                 <p className="text-xs text-gray-400 mt-1">
-                  Responsável:{" "}
-                  <span className="text-gray-100">
-                    {vehicle.responsibleUserName}
-                  </span>
+                  {otherResponsiblesCount > 0
+                    ? "Responsáveis: "
+                    : "Responsável: "}
+                  <span className="text-gray-100">{responsaveisLabel}</span>
                 </p>
               </div>
               <div className="p-3 rounded-2xl bg-yellow-500/10">
@@ -978,7 +1064,8 @@ export default function VehicleDetailsPage() {
                     Observações gerais do veículo
                   </h2>
                   <p className="text-[11px] text-gray-400">
-                    Texto único por veículo — aparece também no relatório em PDF.
+                    Texto único por veículo — aparece também no relatório em
+                    PDF.
                   </p>
                 </div>
               </div>
@@ -1114,7 +1201,7 @@ export default function VehicleDetailsPage() {
 
               {filteredMaintenances.length === 0 ? (
                 <p className="text-sm text-gray-400">
-                  Nenhuma manutenção registrada neste período.
+                  Nenhuma manutenção registrado neste período.
                 </p>
               ) : (
                 <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
@@ -1180,7 +1267,7 @@ export default function VehicleDetailsPage() {
               <div className="p-2 rounded-full bg-yellow-500/10">
                 <Map className="w-4 h-4 text-yellow-400" />
               </div>
-              <h2 className="text-sm font-semibold text-gray-100">
+            <h2 className="text-sm font-semibold text-gray-100">
                 Rotas deste veículo (período)
               </h2>
             </div>

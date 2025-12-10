@@ -31,6 +31,14 @@ import {
   CartesianGrid,
 } from "recharts";
 
+// ======== TIPAGENS ========
+
+interface VehicleResponsibleUser {
+  id: string;
+  name: string;
+  storeId?: string;
+}
+
 interface Vehicle {
   id: string;
   plate: string;
@@ -38,8 +46,14 @@ interface Vehicle {
   storeId: string;
   status: "disponivel" | "em_rota" | "manutencao";
   currentKm?: number;
-  responsibleUserId: string;
-  responsibleUserName: string;
+
+  // campos antigos (pra manter compatibilidade)
+  responsibleUserId?: string;
+  responsibleUserName?: string;
+
+  // NOVOS CAMPOS: múltiplos responsáveis
+  responsibleUserIds: string[];
+  responsibleUsers: VehicleResponsibleUser[];
 }
 
 interface RouteItem {
@@ -117,18 +131,46 @@ export default function DashboardPage() {
         // ===== Veículos =====
         let vehiclesSnap;
         if (isAdmin) {
+          // Admin vê todos
           vehiclesSnap = await getDocs(collection(db, "vehicles"));
         } else {
+          // Usuário comum vê veículos em que ele é um dos responsáveis
           vehiclesSnap = await getDocs(
             query(
               collection(db, "vehicles"),
-              where("responsibleUserId", "==", user.id)
+              where("responsibleUserIds", "array-contains", user.id)
             )
           );
         }
 
         const vList: Vehicle[] = vehiclesSnap.docs.map((d) => {
           const data = d.data() as any;
+
+          // Compatibilidade: se já existir array de responsáveis, usa;
+          // senão, monta a partir de responsibleUserId / responsibleUserName
+          const responsibleUsersFromDoc: VehicleResponsibleUser[] =
+            Array.isArray(data.responsibleUsers) && data.responsibleUsers.length
+              ? data.responsibleUsers
+              : data.responsibleUserId && data.responsibleUserName
+              ? [
+                  {
+                    id: data.responsibleUserId,
+                    name: data.responsibleUserName,
+                    storeId: data.storeId,
+                  },
+                ]
+              : [];
+
+          const responsibleUserIdsFromDoc: string[] =
+            Array.isArray(data.responsibleUserIds) &&
+            data.responsibleUserIds.length
+              ? data.responsibleUserIds
+              : responsibleUsersFromDoc.map((u) => u.id);
+
+          const primaryName =
+            data.responsibleUserName ||
+            (responsibleUsersFromDoc[0]?.name ?? "");
+
           return {
             id: d.id,
             plate: data.plate,
@@ -136,8 +178,12 @@ export default function DashboardPage() {
             storeId: data.storeId,
             status: data.status ?? "disponivel",
             currentKm: data.currentKm,
+            // antigos
             responsibleUserId: data.responsibleUserId,
-            responsibleUserName: data.responsibleUserName,
+            responsibleUserName: primaryName,
+            // novos
+            responsibleUserIds: responsibleUserIdsFromDoc,
+            responsibleUsers: responsibleUsersFromDoc,
           };
         });
         setVehicles(vList);
@@ -147,10 +193,11 @@ export default function DashboardPage() {
         if (isAdmin) {
           routesSnap = await getDocs(collection(db, "routes"));
         } else {
+          // Usuário vê rotas dos veículos em que ele é um dos responsáveis
           routesSnap = await getDocs(
             query(
               collection(db, "routes"),
-              where("responsibleUserId", "==", user.id)
+              where("responsibleUserIds", "array-contains", user.id)
             )
           );
         }
@@ -178,10 +225,11 @@ export default function DashboardPage() {
             query(collection(db, "fuelings"), orderBy("date", "desc"))
           );
         } else {
+          // Usuário vê abastecimentos dos veículos em que ele é um dos responsáveis
           fuelingsSnap = await getDocs(
             query(
               collection(db, "fuelings"),
-              where("responsibleUserId", "==", user.id)
+              where("responsibleUserIds", "array-contains", user.id)
             )
           );
         }
@@ -214,10 +262,11 @@ export default function DashboardPage() {
             query(collection(db, "maintenances"), orderBy("date", "desc"))
           );
         } else {
+          // Usuário vê manutenções dos veículos em que ele é um dos responsáveis
           maintSnap = await getDocs(
             query(
               collection(db, "maintenances"),
-              where("responsibleUserId", "==", user.id)
+              where("responsibleUserIds", "array-contains", user.id)
             )
           );
         }
@@ -335,7 +384,7 @@ export default function DashboardPage() {
     [maintenances]
   );
 
-  // ===== Gasto mensal com combustível e manutenção (todas competências) – usado no modo ADMIN =====
+  // ===== Gasto mensal com combustível e manutenção (para ADMIN) =====
   const monthlyTotals = useMemo(() => {
     if (fuelings.length === 0 && maintenances.length === 0) return [];
 
@@ -622,18 +671,18 @@ export default function DashboardPage() {
                         }}
                         labelFormatter={(label) => `Mês: ${label}`}
                         contentStyle={{
-                          backgroundColor: "#020617", // slate-950
-                          border: "1px solid #374151", // slate-700
+                          backgroundColor: "#020617",
+                          border: "1px solid #374151",
                           borderRadius: 8,
                           fontSize: 12,
-                          color: "#E5E7EB", // cinza claro
+                          color: "#E5E7EB",
                         }}
                       />
                       <Line
                         type="monotone"
                         dataKey="fuelTotal"
                         name="Combustível"
-                        stroke="#FACC15" // amarelo
+                        stroke="#FACC15"
                         strokeWidth={2}
                         dot={{
                           r: 3,
@@ -646,7 +695,7 @@ export default function DashboardPage() {
                         type="monotone"
                         dataKey="maintTotal"
                         name="Manutenção"
-                        stroke="#38BDF8" // azul
+                        stroke="#38BDF8"
                         strokeWidth={2}
                         dot={{
                           r: 3,
@@ -870,8 +919,8 @@ export default function DashboardPage() {
                 </h1>
                 <p className="text-sm text-gray-300 max-w-2xl">
                   Aqui você vê os veículos que estão sob sua responsabilidade,
-                  suas rotas em andamento e os registros deste mês. Use os
-                  botões abaixo para lançar rapidamente os movimentos do dia.
+                  as rotas em andamento e os registros deste mês dos veículos
+                  que você compartilha com outros responsáveis.
                 </p>
               </div>
 
@@ -950,7 +999,7 @@ export default function DashboardPage() {
                   {rotasEmAndamento.length}
                 </p>
                 <p className="text-xs text-gray-400 mt-1">
-                  Clique em “Iniciar rota” para abrir uma nova.
+                  Qualquer responsável pode finalizar as rotas em comum.
                 </p>
               </div>
               <div className="p-3 rounded-2xl bg-yellow-500/10">
@@ -967,7 +1016,7 @@ export default function DashboardPage() {
                   {fuelingsMes.length}
                 </p>
                 <p className="text-xs text-gray-400 mt-1">
-                  Registros lançados neste mês por você.
+                  Registros deste mês dos veículos sob sua responsabilidade.
                 </p>
               </div>
               <div className="p-3 rounded-2xl bg-yellow-500/10">
@@ -995,7 +1044,8 @@ export default function DashboardPage() {
                   <span className="font-semibold text-yellow-400">
                     {rotasEmAndamento.length} rota(s)
                   </span>{" "}
-                  em andamento agora.
+                  em andamento agora (podendo finalizar rotas iniciadas pelos
+                  outros responsáveis).
                 </p>
               </div>
             </div>

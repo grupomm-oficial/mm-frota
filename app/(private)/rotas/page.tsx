@@ -47,7 +47,12 @@ interface Vehicle {
   storeId: string;
   currentKm?: number;
   status?: "disponivel" | "em_rota" | "manutencao";
-  responsibleUserId: string;
+
+  // modelo antigo
+  responsibleUserId?: string;
+
+  // modelo novo: vários responsáveis
+  responsibleUserIds?: string[];
 }
 
 interface Driver {
@@ -178,7 +183,7 @@ export default function RotasPage() {
 
   const isAdmin = user?.role === "admin";
 
-  // NOVO: ref para área de ação (finalizar/cancelar)
+  // ref para área de ação (finalizar/cancelar)
   const actionSectionRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -196,20 +201,9 @@ export default function RotasPage() {
         setLoading(true);
         setErrorMsg("");
 
-        // veículos
-        let vehiclesSnap;
-        if (isAdmin) {
-          vehiclesSnap = await getDocs(collection(db, "vehicles"));
-        } else {
-          vehiclesSnap = await getDocs(
-            query(
-              collection(db, "vehicles"),
-              where("responsibleUserId", "==", user.id)
-            )
-          );
-        }
-
-        const vList: Vehicle[] = vehiclesSnap.docs.map((d) => {
+        // ===== VEÍCULOS =====
+        const vehiclesSnap = await getDocs(collection(db, "vehicles"));
+        let vList: Vehicle[] = vehiclesSnap.docs.map((d) => {
           const data = d.data() as any;
           return {
             id: d.id,
@@ -219,21 +213,45 @@ export default function RotasPage() {
             currentKm: data.currentKm,
             status: data.status,
             responsibleUserId: data.responsibleUserId,
+            responsibleUserIds: Array.isArray(data.responsibleUserIds)
+              ? data.responsibleUserIds
+              : undefined,
           };
         });
-        setVehicles(vList);
 
-        // motoristas
+        // usuário comum vê apenas veículos em que é responsável (single ou multi)
+        if (!isAdmin) {
+          vList = vList.filter((v) => {
+            const singleMatch = v.responsibleUserId === user.id;
+            const multiMatch = v.responsibleUserIds?.includes(user.id) ?? false;
+            return singleMatch || multiMatch;
+          });
+        }
+
+        // ===== MOTORISTAS =====
+        // Agora lista motoristas da MESMA LOJA do usuário
+        // (admin e usuário comum enxergam a lista da loja)
         let driversSnap;
-        if (isAdmin) {
-          driversSnap = await getDocs(collection(db, "drivers"));
-        } else {
+        if (user.storeId) {
           driversSnap = await getDocs(
             query(
               collection(db, "drivers"),
-              where("responsibleUserId", "==", user.id)
+              where("storeId", "==", user.storeId)
             )
           );
+        } else {
+          // fallback: se por algum motivo não tiver storeId no usuário,
+          // mantém comportamento antigo
+          if (isAdmin) {
+            driversSnap = await getDocs(collection(db, "drivers"));
+          } else {
+            driversSnap = await getDocs(
+              query(
+                collection(db, "drivers"),
+                where("responsibleUserId", "==", user.id)
+              )
+            );
+          }
         }
 
         const dList: Driver[] = driversSnap.docs.map((d) => {
@@ -245,24 +263,13 @@ export default function RotasPage() {
             responsibleUserId: data.responsibleUserId,
           };
         });
-        setDrivers(dList);
 
-        // rotas
-        let routesSnap;
-        if (isAdmin) {
-          routesSnap = await getDocs(
-            query(collection(db, "routes"), orderBy("startAt", "desc"))
-          );
-        } else {
-          routesSnap = await getDocs(
-            query(
-              collection(db, "routes"),
-              where("responsibleUserId", "==", user.id)
-            )
-          );
-        }
+        // ===== ROTAS =====
+        const routesSnap = await getDocs(
+          query(collection(db, "routes"), orderBy("startAt", "desc"))
+        );
 
-        const rList: RouteItem[] = routesSnap.docs.map((d) => {
+        let rList: RouteItem[] = routesSnap.docs.map((d) => {
           const data = d.data() as any;
           return {
             id: d.id,
@@ -296,11 +303,15 @@ export default function RotasPage() {
           };
         });
 
-        const sorted = rList.sort((a, b) =>
-          (b.startAt || "").localeCompare(a.startAt || "")
-        );
+        // usuário comum vê apenas rotas de veículos em que ele é responsável
+        if (!isAdmin) {
+          const allowedVehicleIds = new Set(vList.map((v) => v.id));
+          rList = rList.filter((r) => allowedVehicleIds.has(r.vehicleId));
+        }
 
-        setRoutes(sorted);
+        setVehicles(vList);
+        setDrivers(dList);
+        setRoutes(rList);
       } catch (error) {
         console.error("Erro ao carregar rotas:", error);
         setErrorMsg("Erro ao carregar dados de rotas. Tente novamente.");
@@ -355,7 +366,9 @@ export default function RotasPage() {
   }, [routes]);
 
   const uniqueVehiclesCount = useMemo(() => {
-    const setIds = new Set(routes.map((r) => r.vehicleId || `plate:${r.vehiclePlate}`));
+    const setIds = new Set(
+      routes.map((r) => r.vehicleId || `plate:${r.vehiclePlate}`)
+    );
     return setIds.size;
   }, [routes]);
 
@@ -408,6 +421,20 @@ export default function RotasPage() {
   if (!user) return null;
 
   const isOwner = (route: RouteItem) => route.responsibleUserId === user.id;
+
+  const userCanManageRoute = (route: RouteItem) => {
+    if (!user) return false;
+    if (user.role === "admin") return true;
+    if (route.responsibleUserId === user.id) return true;
+
+    const vehicle = vehicles.find((v) => v.id === route.vehicleId);
+    if (!vehicle) return false;
+
+    const singleMatch = vehicle.responsibleUserId === user.id;
+    const multiMatch = vehicle.responsibleUserIds?.includes(user.id) ?? false;
+
+    return singleMatch || multiMatch;
+  };
 
   const filteredHistoryRoutes = useMemo(() => {
     return historyRoutes
@@ -588,7 +615,6 @@ export default function RotasPage() {
     setErrorMsg("");
     setSuccessMsg("");
 
-    // rolar a tela para a área de ação
     scrollToActionSection();
   }
 
@@ -596,8 +622,10 @@ export default function RotasPage() {
     e.preventDefault();
     if (!finishingRoute || !user) return;
 
-    if (!isOwner(finishingRoute)) {
-      setErrorMsg("Apenas quem iniciou a rota pode finalizá-la.");
+    if (!userCanManageRoute(finishingRoute)) {
+      setErrorMsg(
+        "Apenas responsáveis pelo veículo ou quem iniciou a rota podem finalizá-la."
+      );
       return;
     }
 
@@ -691,7 +719,6 @@ export default function RotasPage() {
     setErrorMsg("");
     setSuccessMsg("");
 
-    // rolar a tela para a área de ação
     scrollToActionSection();
   }
 
@@ -699,8 +726,10 @@ export default function RotasPage() {
     e.preventDefault();
     if (!cancelingRoute || !user) return;
 
-    if (!isOwner(cancelingRoute)) {
-      setErrorMsg("Apenas quem iniciou a rota pode cancelá-la.");
+    if (!userCanManageRoute(cancelingRoute)) {
+      setErrorMsg(
+        "Apenas responsáveis pelo veículo ou quem iniciou a rota podem cancelá-la."
+      );
       return;
     }
 
@@ -811,7 +840,7 @@ export default function RotasPage() {
     const route = routes.find((r) => r.id === editingObsRouteId);
     if (!route) return;
 
-    if (isAdmin && !isOwner(route)) {
+    if (!userCanManageRoute(route)) {
       fecharObsRoute();
       return;
     }
@@ -1067,6 +1096,7 @@ export default function RotasPage() {
               <div className="space-y-2">
                 {rotasEmAndamento.map((r) => {
                   const owner = isOwner(r);
+                  const canManage = userCanManageRoute(r);
 
                   return (
                     <div
@@ -1118,7 +1148,7 @@ export default function RotasPage() {
                           </span>
                         </p>
                         <div className="flex gap-2">
-                          {owner && (
+                          {canManage && (
                             <>
                               <Button
                                 size="sm"
@@ -1204,7 +1234,7 @@ export default function RotasPage() {
         </div>
       </div>
 
-      {/* NOVO: ÁREA DESTACADA PARA FINALIZAR / CANCELAR ROTA */}
+      {/* ÁREA DESTACADA PARA FINALIZAR / CANCELAR ROTA */}
       {(finishingRoute || cancelingRoute) && (
         <div ref={actionSectionRef} className="space-y-4">
           <Card className="p-4 bg-neutral-950 border border-yellow-500/60 shadow-lg shadow-yellow-500/20">
@@ -1473,7 +1503,7 @@ export default function RotasPage() {
             </span>
           </h2>
 
-          {loading ? (
+        {loading ? (
             <p className="text-sm text-gray-400">Carregando rotas...</p>
           ) : filteredHistoryRoutes.length === 0 ? (
             <p className="text-sm text-gray-400">
@@ -1512,6 +1542,7 @@ export default function RotasPage() {
 
                     const isObsEditing = editingObsRouteId === r.id;
                     const userIsOwner = isOwner(r);
+                    const canEditObs = userCanManageRoute(r);
 
                     const obsResumo = (r.observacoes || "").trim();
                     const obsTexto =
@@ -1583,7 +1614,7 @@ export default function RotasPage() {
                           </td>
                           <td className="py-2 pl-2 text-right">
                             <div className="flex justify-end gap-2">
-                              {(isAdmin || userIsOwner) && (
+                              {(isAdmin || canEditObs) && (
                                 <Button
                                   size="sm"
                                   className="bg-yellow-400 hover:bg-yellow-300 text-black text-xs h-7 px-3"
@@ -1617,7 +1648,7 @@ export default function RotasPage() {
                                   <span className="text-xs text-gray-300 flex items-center gap-1">
                                     <Info className="w-3 h-3 text-yellow-300" />
                                     Observações da rota
-                                    {isAdmin && !userIsOwner && (
+                                    {isAdmin && !userIsOwner && !canEditObs && (
                                       <span className="text-[10px] text-gray-400">
                                         (visualização somente)
                                       </span>
@@ -1629,16 +1660,16 @@ export default function RotasPage() {
                                   onChange={(e) =>
                                     setObsDraft(e.target.value)
                                   }
-                                  readOnly={isAdmin && !userIsOwner}
+                                  readOnly={!canEditObs}
                                   placeholder={
-                                    isAdmin && !userIsOwner
-                                      ? "Observações registradas pelo responsável pela rota."
-                                      : "Digite ou ajuste as observações da rota..."
+                                    canEditObs
+                                      ? "Digite ou ajuste as observações da rota..."
+                                      : "Observações registradas pelo responsável pela rota."
                                   }
                                   className="w-full rounded-md bg-neutral-950 border border-neutral-700 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 resize-y min-h-[80px]"
                                 />
                                 <div className="flex flex-wrap gap-2 justify-end pt-1">
-                                  {!isAdmin && userIsOwner && (
+                                  {canEditObs && (
                                     <Button
                                       type="submit"
                                       disabled={saving}

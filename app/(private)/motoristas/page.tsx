@@ -68,6 +68,7 @@ export default function MotoristasPage() {
       if (!user) return;
       try {
         setLoading(true);
+        setErrorMsg("");
 
         // Admin pode escolher qualquer usuário como responsável
         if (user.role === "admin") {
@@ -83,7 +84,9 @@ export default function MotoristasPage() {
           setUsers(usersList);
         }
 
-        // Motoristas: admin vê todos, user vê só os que é responsável
+        // Motoristas:
+        // - admin vê todos
+        // - usuário comum vê TODOS os motoristas da própria loja (para compartilhar a lista)
         let driversSnap;
         if (user.role === "admin") {
           driversSnap = await getDocs(collection(db, "drivers"));
@@ -91,7 +94,7 @@ export default function MotoristasPage() {
           driversSnap = await getDocs(
             query(
               collection(db, "drivers"),
-              where("responsibleUserId", "==", user.id)
+              where("storeId", "==", user.storeId)
             )
           );
         }
@@ -122,7 +125,8 @@ export default function MotoristasPage() {
 
   function resetForm() {
     setName("");
-    setStoreId(user?.storeId ?? "");
+    // usuário comum já começa com a loja dele; admin fica em branco e será definido pelo responsável
+    setStoreId(user?.role === "admin" ? "" : user?.storeId ?? "");
     setResponsibleId("");
     setErrorMsg("");
     setSuccessMsg("");
@@ -144,21 +148,32 @@ export default function MotoristasPage() {
     setFormOpen(true);
   }
 
+  // quando admin seleciona responsável, definimos a loja automaticamente
+  function handleChangeResponsible(id: string) {
+    setResponsibleId(id);
+    if (!isAdmin) return;
+
+    const u = users.find((u) => u.id === id);
+    if (u) {
+      setStoreId(u.storeId);
+    }
+  }
+
   async function handleCriarMotorista() {
     try {
       setErrorMsg("");
       setSuccessMsg("");
       setSaving(true);
 
-      if (!name || !storeId) {
-        setErrorMsg("Preencha nome e loja.");
+      if (!name) {
+        setErrorMsg("Preencha o nome do motorista.");
         return;
       }
 
       let responsibleUserId = user!.id;
       let responsibleUserName = user!.name;
+      let storeToSave = storeId;
 
-      // Admin pode escolher outro responsável
       if (isAdmin) {
         if (!responsibleId) {
           setErrorMsg("Selecione o responsável pelo motorista.");
@@ -171,11 +186,20 @@ export default function MotoristasPage() {
         }
         responsibleUserId = u.id;
         responsibleUserName = u.name;
+        storeToSave = u.storeId; // loja do motorista = loja do responsável
+      } else {
+        // usuário comum: força loja dele
+        storeToSave = user!.storeId;
+      }
+
+      if (!storeToSave) {
+        setErrorMsg("Não foi possível definir a loja do motorista.");
+        return;
       }
 
       const docRef = await addDoc(collection(db, "drivers"), {
         name,
-        storeId,
+        storeId: storeToSave,
         responsibleUserId,
         responsibleUserName,
         active: true,
@@ -186,7 +210,7 @@ export default function MotoristasPage() {
         {
           id: docRef.id,
           name,
-          storeId,
+          storeId: storeToSave,
           responsibleUserId,
           responsibleUserName,
           active: true,
@@ -212,13 +236,14 @@ export default function MotoristasPage() {
       setSuccessMsg("");
       setSaving(true);
 
-      if (!name || !storeId) {
-        setErrorMsg("Preencha nome e loja.");
+      if (!name) {
+        setErrorMsg("Preencha o nome do motorista.");
         return;
       }
 
       let responsibleUserId = editingDriver.responsibleUserId;
       let responsibleUserName = editingDriver.responsibleUserName;
+      let storeToSave = editingDriver.storeId;
 
       if (isAdmin) {
         if (!responsibleId) {
@@ -232,11 +257,15 @@ export default function MotoristasPage() {
         }
         responsibleUserId = u.id;
         responsibleUserName = u.name;
+        storeToSave = u.storeId;
+      } else {
+        // usuário comum não muda loja
+        storeToSave = editingDriver.storeId || user!.storeId;
       }
 
       await updateDoc(doc(db, "drivers", editingDriver.id), {
         name,
-        storeId,
+        storeId: storeToSave,
         responsibleUserId,
         responsibleUserName,
       });
@@ -247,7 +276,7 @@ export default function MotoristasPage() {
             ? {
                 ...d,
                 name,
-                storeId,
+                storeId: storeToSave,
                 responsibleUserId,
                 responsibleUserName,
               }
@@ -324,8 +353,7 @@ export default function MotoristasPage() {
             Motoristas da Frota
           </h1>
           <p className="text-sm text-gray-400">
-            Cadastre motoristas e associe a um responsável. Na rota, você
-            escolhe o motorista da lista em vez de digitar o nome.
+            Cadastre motoristas e associe a uma loja e a um responsável. Na rota, você escolhe o motorista da lista em vez de digitar o nome.
           </p>
         </div>
 
@@ -377,28 +405,58 @@ export default function MotoristasPage() {
 
           <form onSubmit={handleSubmit} className="space-y-3">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Input
-                placeholder="Nome do motorista"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
-              />
-              <Input
-                placeholder="Loja / unidade (ex: destack-cedral)"
-                value={storeId}
-                onChange={(e) => setStoreId(e.target.value)}
-                className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
-              />
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">
+                  Nome do motorista
+                </label>
+                <Input
+                  placeholder="Nome do motorista"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
+                />
+              </div>
+
+              {/* Loja / unidade */}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">
+                  Loja / unidade
+                </label>
+                {isAdmin ? (
+                  <>
+                    <Input
+                      placeholder="Selecione o responsável para definir a loja"
+                      value={storeId}
+                      readOnly
+                      className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
+                    />
+                    <p className="text-[11px] text-gray-500 mt-1">
+                      A loja é definida automaticamente pela loja do responsável selecionado.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <Input
+                      value={user?.storeId ?? storeId}
+                      readOnly
+                      className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
+                    />
+                    <p className="text-[11px] text-gray-500 mt-1">
+                      Motoristas desta loja serão compartilhados com outros usuários da mesma unidade.
+                    </p>
+                  </>
+                )}
+              </div>
 
               {isAdmin && (
-                <div>
+                <div className="md:col-span-2">
                   <label className="block text-xs text-gray-400 mb-1">
                     Responsável pelo motorista
                   </label>
                   <select
                     className="w-full rounded-md bg-neutral-950 border border-neutral-700 px-3 py-2 text-sm text-gray-100"
                     value={responsibleId}
-                    onChange={(e) => setResponsibleId(e.target.value)}
+                    onChange={(e) => handleChangeResponsible(e.target.value)}
                   >
                     <option value="">Selecione um responsável...</option>
                     {users.map((u) => (

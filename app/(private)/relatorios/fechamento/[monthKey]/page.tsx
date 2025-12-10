@@ -82,6 +82,21 @@ interface MonthlySummaryData {
   maintenancesCount?: number;
 }
 
+interface VehicleOption {
+  id: string;
+  plate: string;
+  model: string;
+  storeId?: string;
+  currentKm?: number;
+
+  // modelo antigo
+  responsibleUserId?: string;
+  responsibleUserName?: string;
+
+  // modelo novo (multi-responsável)
+  responsibleUserIds?: string[];
+}
+
 export default function MonthlyClosingPage() {
   const params = useParams<{ monthKey: string }>();
   const router = useRouter();
@@ -91,6 +106,8 @@ export default function MonthlyClosingPage() {
   const [routes, setRoutes] = useState<RouteItem[]>([]);
   const [refuels, setRefuels] = useState<RefuelItem[]>([]);
   const [maintenances, setMaintenances] = useState<MaintenanceItem[]>([]);
+  const [vehicles, setVehicles] = useState<VehicleOption[]>([]);
+
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [generatingPdf, setGeneratingPdf] = useState(false);
@@ -114,6 +131,17 @@ export default function MonthlyClosingPage() {
     const d = new Date(isoDate);
     if (Number.isNaN(d.getTime())) return false;
     return d.getFullYear() === year && d.getMonth() + 1 === month;
+  }
+
+  // helper: verifica se o usuário pode usar / ver um veículo
+  function userCanUseVehicle(vehicle: VehicleOption | undefined): boolean {
+    if (!user || !vehicle) return false;
+    if (user.role === "admin") return true;
+
+    const singleMatch = vehicle.responsibleUserId === user.id;
+    const multiMatch = vehicle.responsibleUserIds?.includes(user.id) ?? false;
+
+    return singleMatch || multiMatch;
   }
 
   useEffect(() => {
@@ -144,7 +172,7 @@ export default function MonthlyClosingPage() {
         }
 
         const sData = summarySnap.data() as any;
-        const summaryObj: MonthlySummaryData = {
+        let summaryObj: MonthlySummaryData = {
           monthKey: sData.monthKey ?? params.monthKey,
           year: Number(sData.year ?? year),
           month: Number(sData.month ?? month),
@@ -158,19 +186,29 @@ export default function MonthlyClosingPage() {
         };
         setSummary(summaryObj);
 
-        // 2) Carrega rotas do mês
-        let routesSnap;
-        if (isAdmin) {
-          routesSnap = await getDocs(collection(db, "routes"));
-        } else {
-          routesSnap = await getDocs(
-            query(
-              collection(db, "routes"),
-              where("responsibleUserId", "==", user.id)
-            )
-          );
-        }
+        // 2) Carrega veículos (pra aplicar lógica de múltiplos responsáveis)
+        const vehiclesSnap = await getDocs(collection(db, "vehicles"));
+        const vList: VehicleOption[] = vehiclesSnap.docs.map((d) => {
+          const data = d.data() as any;
+          return {
+            id: d.id,
+            plate: data.plate,
+            model: data.model,
+            storeId: data.storeId,
+            currentKm: data.currentKm,
+            responsibleUserId: data.responsibleUserId,
+            responsibleUserName: data.responsibleUserName,
+            responsibleUserIds: Array.isArray(data.responsibleUserIds)
+              ? data.responsibleUserIds
+              : undefined,
+          };
+        });
+        setVehicles(vList);
+        const vehicleById = new Map<string, VehicleOption>();
+        vList.forEach((v) => vehicleById.set(v.id, v));
 
+        // 3) Carrega rotas (todas) e filtra pelo mês + permissão
+        const routesSnap = await getDocs(collection(db, "routes"));
         const allRoutes: RouteItem[] = routesSnap.docs.map((d) => {
           const data = d.data() as any;
           return {
@@ -192,31 +230,29 @@ export default function MonthlyClosingPage() {
           };
         });
 
-        const monthRoutes = allRoutes
-          .filter((r) =>
-            isInMonth(
-              r.startAt || r.endAt || null,
-              summaryObj.year,
-              summaryObj.month
-            )
+        const monthRoutesRaw = allRoutes.filter((r) =>
+          isInMonth(
+            r.startAt || r.endAt || null,
+            summaryObj.year,
+            summaryObj.month
           )
-          .sort((a, b) => (a.startAt || "").localeCompare(b.startAt || ""));
+        );
 
-        setRoutes(monthRoutes);
+        const visibleRoutes = isAdmin
+          ? monthRoutesRaw
+          : monthRoutesRaw.filter((r) => {
+              if (r.responsibleUserId === user.id) return true;
+              const v = vehicleById.get(r.vehicleId);
+              return userCanUseVehicle(v);
+            });
 
-        // ABASTECIMENTOS
-        let refuelSnap;
-        if (isAdmin) {
-          refuelSnap = await getDocs(collection(db, "fuelings"));
-        } else {
-          refuelSnap = await getDocs(
-            query(
-              collection(db, "fuelings"),
-              where("responsibleUserId", "==", user.id)
-            )
-          );
-        }
+        visibleRoutes.sort((a, b) =>
+          (a.startAt || "").localeCompare(b.startAt || "")
+        );
+        setRoutes(visibleRoutes);
 
+        // 4) ABASTECIMENTOS (fuelings)
+        const refuelSnap = await getDocs(collection(db, "fuelings"));
         const allRefuels: RefuelItem[] = refuelSnap.docs.map((d) => {
           const data = d.data() as any;
           return {
@@ -232,24 +268,22 @@ export default function MonthlyClosingPage() {
           };
         });
 
-        const monthRefuels = allRefuels.filter((f) =>
+        const monthRefuelsRaw = allRefuels.filter((f) =>
           isInMonth(f.date, summaryObj.year, summaryObj.month)
         );
-        setRefuels(monthRefuels);
 
-        // MANUTENÇÕES
-        let maintSnap;
-        if (isAdmin) {
-          maintSnap = await getDocs(collection(db, "maintenances"));
-        } else {
-          maintSnap = await getDocs(
-            query(
-              collection(db, "maintenances"),
-              where("responsibleUserId", "==", user.id)
-            )
-          );
-        }
+        const visibleRefuels = isAdmin
+          ? monthRefuelsRaw
+          : monthRefuelsRaw.filter((f) => {
+              if (f.responsibleUserId === user.id) return true;
+              const v = vehicleById.get(f.vehicleId);
+              return userCanUseVehicle(v);
+            });
 
+        setRefuels(visibleRefuels);
+
+        // 5) MANUTENÇÕES
+        const maintSnap = await getDocs(collection(db, "maintenances"));
         const allMaint: MaintenanceItem[] = maintSnap.docs.map((d) => {
           const data = d.data() as any;
           return {
@@ -266,10 +300,67 @@ export default function MonthlyClosingPage() {
           };
         });
 
-        const monthMaint = allMaint.filter((m) =>
+        const monthMaintRaw = allMaint.filter((m) =>
           isInMonth(m.date, summaryObj.year, summaryObj.month)
         );
-        setMaintenances(monthMaint);
+
+        const visibleMaint = isAdmin
+          ? monthMaintRaw
+          : monthMaintRaw.filter((m) => {
+              if (m.responsibleUserId === user.id) return true;
+              const v = vehicleById.get(m.vehicleId);
+              return userCanUseVehicle(v);
+            });
+
+        setMaintenances(visibleMaint);
+
+        // 6) Se não for admin, recalcula o resumo para bater com o que o usuário vê
+        if (!isAdmin) {
+          const totalKm = visibleRoutes.reduce((acc, r) => {
+            if (r.distanceKm != null) return acc + r.distanceKm;
+            if (r.endKm != null) return acc + (r.endKm - r.startKm);
+            return acc;
+          }, 0);
+
+          const totalCombustivel = visibleRefuels.reduce(
+            (acc, f) => acc + (f.totalCost || 0),
+            0
+          );
+
+          const totalManutencao = visibleMaint.reduce(
+            (acc, m) => acc + (m.cost || 0),
+            0
+          );
+
+          const kmPorVeiculoMap = new Map<string, number>();
+          for (const r of visibleRoutes) {
+            const key = r.vehicleId || r.vehiclePlate;
+            const dist =
+              r.distanceKm != null
+                ? r.distanceKm
+                : r.endKm != null
+                ? r.endKm - r.startKm
+                : 0;
+            kmPorVeiculoMap.set(key, (kmPorVeiculoMap.get(key) || 0) + dist);
+          }
+          const qtdVeiculosComMovimento = kmPorVeiculoMap.size;
+          const kmMedioPorVeiculo =
+            qtdVeiculosComMovimento > 0
+              ? totalKm / qtdVeiculosComMovimento
+              : 0;
+
+          summaryObj = {
+            ...summaryObj,
+            totalKmRodado: totalKm,
+            totalCombustivel,
+            totalManutencao,
+            kmMedioPorVeiculo,
+            routesCount: visibleRoutes.length,
+            refuelsCount: visibleRefuels.length,
+            maintenancesCount: visibleMaint.length,
+          };
+          setSummary(summaryObj);
+        }
       } catch (error) {
         console.error("Erro ao carregar fechamento mensal:", error);
         setErrorMsg("Erro ao carregar o fechamento mensal.");
@@ -337,7 +428,6 @@ export default function MonthlyClosingPage() {
       // 🔶 Logo no canto direito (usa favicon.png)
       try {
         const logoDataUrl = await loadImageAsDataUrl("/favicon.png");
-        // x, y, width, height
         docPdf.addImage(logoDataUrl, "PNG", 180, 10, 16, 16);
       } catch {
         // se não conseguir carregar a imagem, só segue sem logo
@@ -379,7 +469,7 @@ export default function MonthlyClosingPage() {
       docPdf.line(marginLeft, currentY, 200, currentY);
       currentY += 7;
 
-      // Resumo (versão simplificada)
+      // Resumo
       docPdf.setFontSize(11);
       docPdf.setFont("helvetica", "bold");
       docPdf.text("Resumo geral do mês", marginLeft, currentY);
@@ -451,14 +541,12 @@ export default function MonthlyClosingPage() {
           ]),
           styles: {
             fontSize: 8,
-            // linhas claras: texto escuro
             textColor: [0, 0, 0],
           },
           headStyles: {
             fillColor: [250, 204, 21], // amarelo
             textColor: [0, 0, 0],
           },
-          // Linhas alternadas: fundo cinza escuro, texto branco
           alternateRowStyles: {
             fillColor: [40, 40, 40],
             textColor: [255, 255, 255],
@@ -753,7 +841,7 @@ export default function MonthlyClosingPage() {
           </div>
           {maintenances.length === 0 ? (
             <p className="text-sm text-gray-400">
-              Nenhuma manutenção registrada neste mês.
+              Nenhuma manutenção registrado neste mês.
             </p>
           ) : (
             <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
