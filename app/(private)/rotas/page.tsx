@@ -1,23 +1,25 @@
-"use client";
+﻿"use client";
 
-import { useEffect, useMemo, useState, useRef, Fragment } from "react";
+import { useEffect, useMemo, useState, Fragment } from "react";
 import { db } from "@/lib/firebase";
 import {
   collection,
   getDocs,
-  addDoc,
   query,
   where,
   orderBy,
   updateDoc,
-  deleteDoc,
   doc,
+  writeBatch,
 } from "firebase/firestore";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter } from "next/navigation";
+import { ActionIconButton } from "@/components/ui/action-icon-button";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { StatusBanner } from "@/components/layout/StatusBanner";
 import {
   Route as RouteIcon,
   Activity,
@@ -25,17 +27,29 @@ import {
   Clock,
   Filter,
   Search,
-  PieChart as PieIcon,
   Info,
+  PencilLine,
+  PieChart as PieIcon,
+  CheckCircle2,
+  Gauge,
+  History,
+  XCircle,
 } from "lucide-react";
-
 import {
-  PieChart,
-  Pie,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Cell,
-  Tooltip as ReTooltip,
-  ResponsiveContainer,
   Legend,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip as ReTooltip,
 } from "recharts";
 
 type RouteStatus = "em_andamento" | "finalizada" | "cancelada";
@@ -60,6 +74,11 @@ interface Driver {
   name: string;
   storeId: string;
   responsibleUserId: string;
+}
+
+interface MaintenanceLock {
+  vehicleId: string;
+  status: "em_andamento" | "concluida";
 }
 
 interface RouteItem {
@@ -92,7 +111,13 @@ interface RouteItem {
   canceledById?: string | null;
   canceledByName?: string | null;
   cancelReason?: string | null;
+  updatedAt?: string | null;
+  updatedById?: string | null;
+  updatedByName?: string | null;
+  editReason?: string | null;
 }
+
+const vehicleStatusColors = ["#facc15", "#3b82f6", "#e5e7eb"];
 
 const CustomPieTooltip = ({ active, payload }: any) => {
   if (!active || !payload || !payload.length) return null;
@@ -131,6 +156,53 @@ function getMonthKeyFromIso(iso?: string | null): string | null {
   return `${year}-${month}`;
 }
 
+function getDateKeyFromIso(iso?: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getRouteReferenceIso(route: RouteItem): string {
+  return route.finishedAt || route.endAt || route.startAt || route.createdAt || "";
+}
+
+function formatRouteDateTime(value?: string | null) {
+  if (!value) return "-";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+
+  return date.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function getHoursOpen(startAt?: string | null) {
+  if (!startAt) return 0;
+
+  const start = new Date(startAt);
+  if (Number.isNaN(start.getTime())) return 0;
+
+  return Math.max(0, (Date.now() - start.getTime()) / (1000 * 60 * 60));
+}
+
+function formatDurationHours(hours: number) {
+  if (!Number.isFinite(hours) || hours <= 0) return "0h";
+
+  if (hours < 1) {
+    return `${Math.max(1, Math.round(hours * 60))}min`;
+  }
+
+  return `${hours.toFixed(1)}h`;
+}
+
 export default function RotasPage() {
   const { user } = useAuth();
   const router = useRouter();
@@ -138,6 +210,7 @@ export default function RotasPage() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [routes, setRoutes] = useState<RouteItem[]>([]);
+  const [maintenanceLocks, setMaintenanceLocks] = useState<MaintenanceLock[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [formOpen, setFormOpen] = useState(false);
@@ -161,6 +234,7 @@ export default function RotasPage() {
   // cancelar rota
   const [cancelingRoute, setCancelingRoute] = useState<RouteItem | null>(null);
   const [cancelReasonInput, setCancelReasonInput] = useState("");
+  const [deletingRoute, setDeletingRoute] = useState<RouteItem | null>(null);
 
   // histórico / filtros
   const [historyStatusFilter, setHistoryStatusFilter] = useState<
@@ -173,19 +247,36 @@ export default function RotasPage() {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   });
+  const [showAllHistoryRoutes, setShowAllHistoryRoutes] = useState(false);
 
   // filtro para ver só rotas que eu lancei
+  const [activeSearch, setActiveSearch] = useState("");
+  const [activeStoreFilter, setActiveStoreFilter] = useState("todas");
+  const [activeDriverFilter, setActiveDriverFilter] = useState("todos");
+  const [activeDurationFilter, setActiveDurationFilter] = useState<
+    "todas" | "4h" | "8h"
+  >("todas");
+  const [showOnlyMyActiveRoutes, setShowOnlyMyActiveRoutes] = useState(false);
   const [showOnlyMyRoutes, setShowOnlyMyRoutes] = useState(false);
 
   // edição/visualização de obs
   const [editingObsRouteId, setEditingObsRouteId] = useState<string | null>(null);
   const [obsDraft, setObsDraft] = useState("");
 
+  // edição de rota (admin)
+  const [editingRoute, setEditingRoute] = useState<RouteItem | null>(null);
+  const [editDriverId, setEditDriverId] = useState("");
+  const [editOrigemInput, setEditOrigemInput] = useState("");
+  const [editDestinoInput, setEditDestinoInput] = useState("");
+  const [editStartKmInput, setEditStartKmInput] = useState("");
+  const [editEndKmInput, setEditEndKmInput] = useState("");
+  const [editObsInput, setEditObsInput] = useState("");
+  const [editReasonInput, setEditReasonInput] = useState("");
+
   const isAdmin = user?.role === "admin";
+  const userId = user?.id ?? "";
 
   // ref para área de ação (finalizar/cancelar)
-  const actionSectionRef = useRef<HTMLDivElement | null>(null);
-
   useEffect(() => {
     if (!user) {
       router.replace("/login");
@@ -232,7 +323,9 @@ export default function RotasPage() {
         // Agora lista motoristas da MESMA LOJA do usuário
         // (admin e usuário comum enxergam a lista da loja)
         let driversSnap;
-        if (user.storeId) {
+        if (isAdmin) {
+          driversSnap = await getDocs(collection(db, "drivers"));
+        } else if (user.storeId) {
           driversSnap = await getDocs(
             query(
               collection(db, "drivers"),
@@ -242,16 +335,12 @@ export default function RotasPage() {
         } else {
           // fallback: se por algum motivo não tiver storeId no usuário,
           // mantém comportamento antigo
-          if (isAdmin) {
-            driversSnap = await getDocs(collection(db, "drivers"));
-          } else {
-            driversSnap = await getDocs(
-              query(
-                collection(db, "drivers"),
-                where("responsibleUserId", "==", user.id)
-              )
-            );
-          }
+          driversSnap = await getDocs(
+            query(
+              collection(db, "drivers"),
+              where("responsibleUserId", "==", user.id)
+            )
+          );
         }
 
         const dList: Driver[] = driversSnap.docs.map((d) => {
@@ -300,6 +389,10 @@ export default function RotasPage() {
             canceledById: data.canceledById ?? null,
             canceledByName: data.canceledByName ?? null,
             cancelReason: data.cancelReason ?? null,
+            updatedAt: data.updatedAt ?? null,
+            updatedById: data.updatedById ?? null,
+            updatedByName: data.updatedByName ?? null,
+            editReason: data.editReason ?? null,
           };
         });
 
@@ -309,9 +402,26 @@ export default function RotasPage() {
           rList = rList.filter((r) => allowedVehicleIds.has(r.vehicleId));
         }
 
+        const maintenancesSnap = await getDocs(collection(db, "maintenances"));
+        let maintenanceList: MaintenanceLock[] = maintenancesSnap.docs.map((d) => {
+          const data = d.data() as any;
+          return {
+            vehicleId: data.vehicleId,
+            status: (data.status ?? "em_andamento") as MaintenanceLock["status"],
+          };
+        });
+
+        if (!isAdmin) {
+          const allowedVehicleIds = new Set(vList.map((v) => v.id));
+          maintenanceList = maintenanceList.filter((item) =>
+            allowedVehicleIds.has(item.vehicleId)
+          );
+        }
+
         setVehicles(vList);
         setDrivers(dList);
         setRoutes(rList);
+        setMaintenanceLocks(maintenanceList);
       } catch (error) {
         console.error("Erro ao carregar rotas:", error);
         setErrorMsg("Erro ao carregar dados de rotas. Tente novamente.");
@@ -345,6 +455,13 @@ export default function RotasPage() {
     () => routes.filter((r) => r.status === "em_andamento"),
     [routes]
   );
+  const busyDriverIds = useMemo(() => {
+    const ids = new Set<string>();
+    rotasEmAndamento.forEach((route) => {
+      if (route.driverId) ids.add(route.driverId);
+    });
+    return ids;
+  }, [rotasEmAndamento]);
   const rotasFinalizadas = useMemo(
     () => routes.filter((r) => r.status === "finalizada"),
     [routes]
@@ -353,8 +470,14 @@ export default function RotasPage() {
     () => routes.filter((r) => r.status === "cancelada"),
     [routes]
   );
+  const rotasLongasEmAndamento = useMemo(
+    () => rotasEmAndamento.filter((route) => getHoursOpen(route.startAt) >= 8),
+    [rotasEmAndamento]
+  );
 
   const totalRotas = routes.length;
+  const taxaCancelamento =
+    totalRotas === 0 ? 0 : (rotasCanceladas.length / totalRotas) * 100;
 
   const totalKmRodado = useMemo(() => {
     return routes.reduce((acc, r) => {
@@ -371,6 +494,36 @@ export default function RotasPage() {
     );
     return setIds.size;
   }, [routes]);
+
+  const kmMedioFinalizado = useMemo(() => {
+    if (rotasFinalizadas.length === 0) return 0;
+
+    const totalDistance = rotasFinalizadas.reduce((acc, route) => {
+      if (route.distanceKm != null) return acc + route.distanceKm;
+      if (route.endKm != null) return acc + (route.endKm - route.startKm);
+      return acc;
+    }, 0);
+
+    return totalDistance / rotasFinalizadas.length;
+  }, [rotasFinalizadas]);
+
+  const tempoMedioFinalizacao = useMemo(() => {
+    const durations = rotasFinalizadas
+      .map((route) => {
+        if (!route.startAt || !route.endAt) return null;
+
+        const start = new Date(route.startAt).getTime();
+        const end = new Date(route.endAt).getTime();
+        if (Number.isNaN(start) || Number.isNaN(end) || end < start) return null;
+
+        return (end - start) / (1000 * 60 * 60);
+      })
+      .filter((value): value is number => value != null);
+
+    if (durations.length === 0) return 0;
+
+    return durations.reduce((sum, value) => sum + value, 0) / durations.length;
+  }, [rotasFinalizadas]);
 
   const vehicleStatusData = useMemo(() => {
     if (!vehicles.length) return [];
@@ -395,7 +548,15 @@ export default function RotasPage() {
     return data.filter((d) => d.value > 0);
   }, [vehicles]);
 
-  const vehicleStatusColors = ["#22c55e", "#eab308", "#ef4444"];
+  const availableVehiclesNow = useMemo(() => {
+    return vehicles
+      .filter((vehicle) => vehicle.status === "disponivel" || !vehicle.status)
+      .sort((a, b) => {
+        const storeCompare = (a.storeId || "").localeCompare(b.storeId || "");
+        if (storeCompare !== 0) return storeCompare;
+        return a.plate.localeCompare(b.plate);
+      });
+  }, [vehicles]);
 
   const historyRoutes = useMemo(
     () => routes.filter((r) => r.status !== "em_andamento"),
@@ -418,9 +579,23 @@ export default function RotasPage() {
     return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1]));
   }, [historyRoutes]);
 
-  if (!user) return null;
+  const activeStoreOptions = useMemo(() => {
+    const stores = new Set<string>();
+    rotasEmAndamento.forEach((route) => {
+      if (route.storeId) stores.add(route.storeId);
+    });
+    return Array.from(stores).sort();
+  }, [rotasEmAndamento]);
 
-  const isOwner = (route: RouteItem) => route.responsibleUserId === user.id;
+  const activeDriverOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    rotasEmAndamento.forEach((route) => {
+      if (route.driverId) map.set(route.driverId, route.driverName);
+    });
+    return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  }, [rotasEmAndamento]);
+
+  const isOwner = (route: RouteItem) => route.responsibleUserId === userId;
 
   const userCanManageRoute = (route: RouteItem) => {
     if (!user) return false;
@@ -436,10 +611,63 @@ export default function RotasPage() {
     return singleMatch || multiMatch;
   };
 
+  const filteredActiveRoutes = useMemo(() => {
+    return rotasEmAndamento.filter((route) => {
+      if (showOnlyMyActiveRoutes && route.responsibleUserId !== userId) {
+        return false;
+      }
+
+      if (activeStoreFilter !== "todas" && (route.storeId || "") !== activeStoreFilter) {
+        return false;
+      }
+
+      if (activeDriverFilter !== "todos" && route.driverId !== activeDriverFilter) {
+        return false;
+      }
+
+      if (activeDurationFilter === "4h" && getHoursOpen(route.startAt) < 4) {
+        return false;
+      }
+
+      if (activeDurationFilter === "8h" && getHoursOpen(route.startAt) < 8) {
+        return false;
+      }
+
+      if (activeSearch.trim()) {
+        const term = activeSearch.toLowerCase();
+        const composed = [
+          route.vehiclePlate,
+          route.vehicleModel,
+          route.driverName,
+          route.origem || "",
+          route.destino || "",
+          route.storeId || "",
+          route.responsibleUserName || "",
+        ]
+          .join(" ")
+          .toLowerCase();
+
+        if (!composed.includes(term)) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [
+    activeDriverFilter,
+    activeDurationFilter,
+    activeSearch,
+    activeStoreFilter,
+    rotasEmAndamento,
+    showOnlyMyActiveRoutes,
+    userId,
+  ]);
+
   const filteredHistoryRoutes = useMemo(() => {
     return historyRoutes
       .filter((r) => {
-        if (showOnlyMyRoutes && r.responsibleUserId !== user.id) {
+        if (showOnlyMyRoutes && r.responsibleUserId !== userId) {
           return false;
         }
 
@@ -484,7 +712,9 @@ export default function RotasPage() {
 
         return true;
       })
-      .sort((a, b) => (b.startAt || "").localeCompare(a.startAt || ""));
+      .sort((a, b) =>
+        getRouteReferenceIso(b).localeCompare(getRouteReferenceIso(a))
+      );
   }, [
     historyRoutes,
     historyStatusFilter,
@@ -493,14 +723,60 @@ export default function RotasPage() {
     historyDriverFilter,
     historySearch,
     showOnlyMyRoutes,
-    user.id,
+    userId,
   ]);
+
+  const todayHistoryRoutes = useMemo(() => {
+    const todayKey = getDateKeyFromIso(new Date().toISOString());
+
+    return historyRoutes
+      .filter((route) => getDateKeyFromIso(getRouteReferenceIso(route)) === todayKey)
+      .sort((a, b) =>
+        getRouteReferenceIso(b).localeCompare(getRouteReferenceIso(a))
+      );
+  }, [historyRoutes]);
+
+  const displayedHistoryRoutes = showAllHistoryRoutes
+    ? filteredHistoryRoutes
+    : todayHistoryRoutes;
 
   const availableVehiclesForRoute = useMemo(
     () =>
-      vehicles.filter((v) => v.status !== "em_rota" && v.status !== "manutencao"),
-    [vehicles]
+      vehicles.filter(
+        (vehicle) =>
+          vehicle.status !== "em_rota" &&
+          vehicle.status !== "manutencao" &&
+          !maintenanceLocks.some(
+            (maintenance) =>
+              maintenance.vehicleId === vehicle.id &&
+              maintenance.status === "em_andamento"
+          )
+      ),
+    [maintenanceLocks, vehicles]
   );
+
+  const availableDriversForRoute = useMemo(
+    () => drivers.filter((driver) => !busyDriverIds.has(driver.id)),
+    [busyDriverIds, drivers]
+  );
+
+  const availableDriversForEditing = useMemo(() => {
+    if (!editingRoute) return drivers;
+
+    const sameStoreDrivers = drivers.filter(
+      (driver) => !editingRoute.storeId || driver.storeId === editingRoute.storeId
+    );
+
+    return sameStoreDrivers.length > 0 ? sameStoreDrivers : drivers;
+  }, [drivers, editingRoute]);
+
+  useEffect(() => {
+    if (!selectedDriverId) return;
+    if (availableDriversForRoute.some((driver) => driver.id === selectedDriverId)) return;
+    setSelectedDriverId("");
+  }, [availableDriversForRoute, selectedDriverId]);
+
+  if (!user) return null;
 
   async function handleCriarRota(e: React.FormEvent) {
     e.preventDefault();
@@ -522,7 +798,17 @@ export default function RotasPage() {
         return;
       }
 
-      if (vehicle.status === "em_rota" || vehicle.status === "manutencao") {
+      const vehicleInOpenMaintenance = maintenanceLocks.some(
+        (maintenance) =>
+          maintenance.vehicleId === vehicle.id &&
+          maintenance.status === "em_andamento"
+      );
+
+      if (
+        vehicle.status === "em_rota" ||
+        vehicle.status === "manutencao" ||
+        vehicleInOpenMaintenance
+      ) {
         setErrorMsg(
           "Este veículo está em rota ou manutenção. Escolha outro veículo."
         );
@@ -535,9 +821,26 @@ export default function RotasPage() {
         return;
       }
 
+      if (busyDriverIds.has(driver.id)) {
+        setErrorMsg("Este motorista já está em rota. Escolha outro motorista.");
+        return;
+      }
+
       const startKmNumber = startKmInput.trim()
         ? Number(startKmInput.replace(",", "."))
         : vehicle.currentKm ?? 0;
+
+      if (!Number.isFinite(startKmNumber) || startKmNumber < 0) {
+        setErrorMsg("Informe um KM inicial valido.");
+        return;
+      }
+
+      if (vehicle.currentKm != null && startKmNumber < vehicle.currentKm) {
+        setErrorMsg(
+          `O KM inicial nao pode ser menor que ${vehicle.currentKm} km.`
+        );
+        return;
+      }
 
       const nowIso = new Date().toISOString();
 
@@ -564,12 +867,17 @@ export default function RotasPage() {
         createdByName: user.name,
       };
 
-      const docRef = await addDoc(collection(db, "routes"), newRouteData);
+      const docRef = doc(collection(db, "routes"));
+      const batch = writeBatch(db);
 
-      await updateDoc(doc(db, "vehicles", vehicle.id), {
+      batch.set(docRef, newRouteData);
+
+      batch.update(doc(db, "vehicles", vehicle.id), {
         status: "em_rota",
         currentKm: startKmNumber,
       });
+
+      await batch.commit();
 
       const routeForState: RouteItem = {
         id: docRef.id,
@@ -586,9 +894,9 @@ export default function RotasPage() {
         )
       );
 
-      setSuccessMsg("Rota iniciada com sucesso!");
       resetForm();
       setFormOpen(false);
+      setSuccessMsg("Rota iniciada com sucesso.");
     } catch (error) {
       console.error("Erro ao iniciar rota:", error);
       setErrorMsg("Erro ao iniciar rota. Tente novamente.");
@@ -597,16 +905,9 @@ export default function RotasPage() {
     }
   }
 
-  function scrollToActionSection() {
-    if (actionSectionRef.current) {
-      actionSectionRef.current.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
-    }
-  }
-
   function abrirFinalizarRota(route: RouteItem) {
+    setFormOpen(false);
+    fecharEdicaoRota();
     setFinishingRoute(route);
     setCancelingRoute(null);
     setEndKmInput(route.endKm != null ? String(route.endKm) : "");
@@ -614,8 +915,6 @@ export default function RotasPage() {
     setObsInput(route.observacoes ?? "");
     setErrorMsg("");
     setSuccessMsg("");
-
-    scrollToActionSection();
   }
 
   async function handleFinalizarRota(e: React.FormEvent) {
@@ -653,7 +952,9 @@ export default function RotasPage() {
       const distance = endKmNumber - finishingRoute.startKm;
       const nowIso = new Date().toISOString();
 
-      await updateDoc(doc(db, "routes", finishingRoute.id), {
+      const finishBatch = writeBatch(db);
+
+      finishBatch.update(doc(db, "routes", finishingRoute.id), {
         endKm: endKmNumber,
         endAt: nowIso,
         distanceKm: distance,
@@ -666,11 +967,15 @@ export default function RotasPage() {
       });
 
       if (finishingRoute.vehicleId) {
-        await updateDoc(doc(db, "vehicles", finishingRoute.vehicleId), {
+        finishBatch.update(doc(db, "vehicles", finishingRoute.vehicleId), {
           currentKm: endKmNumber,
           status: "disponivel",
         });
+      }
 
+      await finishBatch.commit();
+
+      if (finishingRoute.vehicleId) {
         setVehicles((prev) =>
           prev.map((v) =>
             v.id === finishingRoute.vehicleId
@@ -713,13 +1018,13 @@ export default function RotasPage() {
   }
 
   function abrirCancelarRota(route: RouteItem) {
+    setFormOpen(false);
+    fecharEdicaoRota();
     setCancelingRoute(route);
     setFinishingRoute(null);
     setCancelReasonInput("");
     setErrorMsg("");
     setSuccessMsg("");
-
-    scrollToActionSection();
   }
 
   async function handleConfirmarCancelamento(e: React.FormEvent) {
@@ -733,11 +1038,6 @@ export default function RotasPage() {
       return;
     }
 
-    const confirm = window.confirm(
-      `Tem certeza que deseja cancelar a rota do veículo ${cancelingRoute.vehiclePlate}?`
-    );
-    if (!confirm) return;
-
     try {
       setSaving(true);
       setErrorMsg("");
@@ -745,7 +1045,9 @@ export default function RotasPage() {
 
       const nowIso = new Date().toISOString();
 
-      await updateDoc(doc(db, "routes", cancelingRoute.id), {
+      const cancelBatch = writeBatch(db);
+
+      cancelBatch.update(doc(db, "routes", cancelingRoute.id), {
         status: "cancelada" as RouteStatus,
         canceledAt: nowIso,
         canceledById: user.id,
@@ -754,11 +1056,15 @@ export default function RotasPage() {
       });
 
       if (cancelingRoute.vehicleId) {
-        await updateDoc(doc(db, "vehicles", cancelingRoute.vehicleId), {
+        cancelBatch.update(doc(db, "vehicles", cancelingRoute.vehicleId), {
           status: "disponivel",
           currentKm: cancelingRoute.startKm,
         });
+      }
 
+      await cancelBatch.commit();
+
+      if (cancelingRoute.vehicleId) {
         setVehicles((prev) =>
           prev.map((v) =>
             v.id === cancelingRoute.vehicleId
@@ -794,30 +1100,47 @@ export default function RotasPage() {
     }
   }
 
-  async function handleExcluirRota(route: RouteItem) {
+  function abrirExcluirRota(route: RouteItem) {
     if (!isAdmin) return;
-    const confirmar = window.confirm(
-      `Tem certeza que deseja excluir a rota do veículo ${route.vehiclePlate}?`
-    );
-    if (!confirmar) return;
+    setDeletingRoute(route);
+    setErrorMsg("");
+    setSuccessMsg("");
+  }
+
+  async function handleExcluirRota() {
+    if (!isAdmin || !deletingRoute) return;
+
+    const route = deletingRoute;
 
     try {
-      await deleteDoc(doc(db, "routes", route.id));
+      setSaving(true);
+      const deleteBatch = writeBatch(db);
+      deleteBatch.delete(doc(db, "routes", route.id));
+
+      if (route.status === "em_andamento" && route.vehicleId) {
+        deleteBatch.update(doc(db, "vehicles", route.vehicleId), {
+          status: "disponivel",
+        });
+      }
+
+      await deleteBatch.commit();
       setRoutes((prev) => prev.filter((r) => r.id !== route.id));
 
       if (route.status === "em_andamento" && route.vehicleId) {
-        await updateDoc(doc(db, "vehicles", route.vehicleId), {
-          status: "disponivel",
-        });
         setVehicles((prev) =>
           prev.map((v) =>
             v.id === route.vehicleId ? { ...v, status: "disponivel" } : v
           )
         );
       }
+
+      setDeletingRoute(null);
+      setSuccessMsg("Rota excluida com sucesso!");
     } catch (error) {
       console.error("Erro ao excluir rota:", error);
       setErrorMsg("Erro ao excluir rota. Tente novamente.");
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -875,39 +1198,307 @@ export default function RotasPage() {
     }
   }
 
-  return (
-    <div className="space-y-6">
-      {/* Cabeçalho */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <RouteIcon className="w-5 h-5 text-yellow-400" />
-            <h1 className="text-2xl font-bold text-yellow-400">Rotas da Frota</h1>
-          </div>
-          <p className="text-sm text-gray-400 max-w-xl">
-            Inicie, acompanhe e finalize rotas dos veículos. Tudo aqui alimenta os
-            relatórios e o fechamento mensal da frota.
-          </p>
-        </div>
+  function fecharEdicaoRota() {
+    setEditingRoute(null);
+    setEditDriverId("");
+    setEditOrigemInput("");
+    setEditDestinoInput("");
+    setEditStartKmInput("");
+    setEditEndKmInput("");
+    setEditObsInput("");
+    setEditReasonInput("");
+  }
 
-        <Button
-          className="bg-yellow-500 hover:bg-yellow-400 text-black font-semibold text-sm"
-          onClick={() => {
-            resetForm();
-            setFinishingRoute(null);
-            setCancelingRoute(null);
-            setFormOpen(true);
-          }}
-        >
-          + Nova rota
-        </Button>
-      </div>
+  function abrirEditarRota(route: RouteItem) {
+    if (!isAdmin) return;
+    if (route.status === "cancelada") return;
+
+    setFormOpen(false);
+    setFinishingRoute(null);
+    setCancelingRoute(null);
+    fecharObsRoute();
+    setErrorMsg("");
+    setSuccessMsg("");
+    setEditingRoute(route);
+    setEditDriverId(route.driverId);
+    setEditOrigemInput(route.origem ?? "");
+    setEditDestinoInput(route.destino ?? "");
+    setEditStartKmInput(String(route.startKm ?? ""));
+    setEditEndKmInput(route.endKm != null ? String(route.endKm) : "");
+    setEditObsInput(route.observacoes ?? "");
+    setEditReasonInput("");
+  }
+
+  async function handleSalvarEdicaoRota(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingRoute || !user || !isAdmin) return;
+
+    try {
+      setSaving(true);
+      setErrorMsg("");
+      setSuccessMsg("");
+
+      const selectedDriver = drivers.find((driver) => driver.id === editDriverId);
+      if (!selectedDriver) {
+        setErrorMsg("Selecione um motorista valido para a rota.");
+        return;
+      }
+
+      const startKmNumber = Number(editStartKmInput.replace(",", "."));
+      if (!Number.isFinite(startKmNumber) || startKmNumber < 0) {
+        setErrorMsg("Informe um KM inicial valido.");
+        return;
+      }
+
+      let endKmNumber: number | null = editingRoute.endKm ?? null;
+      if (editingRoute.status === "finalizada") {
+        if (!editEndKmInput.trim()) {
+          setErrorMsg("Informe o KM final da rota finalizada.");
+          return;
+        }
+
+        endKmNumber = Number(editEndKmInput.replace(",", "."));
+        if (!Number.isFinite(endKmNumber)) {
+          setErrorMsg("Informe um KM final valido.");
+          return;
+        }
+
+        if (endKmNumber < startKmNumber) {
+          setErrorMsg("O KM final nao pode ser menor que o KM inicial.");
+          return;
+        }
+
+        if (!editReasonInput.trim()) {
+          setErrorMsg("Informe o motivo da alteracao desta rota finalizada.");
+          return;
+        }
+      }
+
+      const nextOrigem = editOrigemInput.trim() || null;
+      const nextDestino = editDestinoInput.trim() || null;
+      const nextObs = editObsInput.trim() || null;
+      const nextDistance =
+        editingRoute.status === "finalizada" && endKmNumber != null
+          ? endKmNumber - startKmNumber
+          : editingRoute.distanceKm ?? null;
+
+      const nowIso = new Date().toISOString();
+      const routeDocRef = doc(db, "routes", editingRoute.id);
+      const batch = writeBatch(db);
+
+      batch.update(routeDocRef, {
+        driverId: selectedDriver.id,
+        driverName: selectedDriver.name,
+        origem: nextOrigem,
+        destino: nextDestino,
+        startKm: startKmNumber,
+        endKm: endKmNumber,
+        distanceKm: nextDistance,
+        observacoes: nextObs,
+        updatedAt: nowIso,
+        updatedById: user.id,
+        updatedByName: user.name,
+        editReason: editReasonInput.trim() || null,
+      });
+
+      const routeVehicle = vehicles.find((vehicle) => vehicle.id === editingRoute.vehicleId);
+      let shouldSyncVehicleKm = false;
+      let nextVehicleKm: number | null = null;
+
+      if (editingRoute.vehicleId && routeVehicle) {
+        if (editingRoute.status === "em_andamento") {
+          shouldSyncVehicleKm = true;
+          nextVehicleKm = startKmNumber;
+        } else if (editingRoute.status === "finalizada" && endKmNumber != null) {
+          const referenceIso = getRouteReferenceIso(editingRoute);
+          const hasNewerRouteForVehicle = routes.some(
+            (route) =>
+              route.id !== editingRoute.id &&
+              route.vehicleId === editingRoute.vehicleId &&
+              route.status !== "cancelada" &&
+              getRouteReferenceIso(route) > referenceIso
+          );
+
+          if (!hasNewerRouteForVehicle) {
+            shouldSyncVehicleKm = true;
+            nextVehicleKm = endKmNumber;
+          }
+        }
+
+        if (shouldSyncVehicleKm && nextVehicleKm != null) {
+          batch.update(doc(db, "vehicles", editingRoute.vehicleId), {
+            currentKm: nextVehicleKm,
+          });
+        }
+      }
+
+      await batch.commit();
+
+      setRoutes((prev) =>
+        prev.map((route) =>
+          route.id === editingRoute.id
+            ? {
+                ...route,
+                driverId: selectedDriver.id,
+                driverName: selectedDriver.name,
+                origem: nextOrigem,
+                destino: nextDestino,
+                startKm: startKmNumber,
+                endKm: endKmNumber,
+                distanceKm: nextDistance,
+                observacoes: nextObs,
+                updatedAt: nowIso,
+                updatedById: user.id,
+                updatedByName: user.name,
+                editReason: editReasonInput.trim() || null,
+              }
+            : route
+        )
+      );
+
+      if (shouldSyncVehicleKm && nextVehicleKm != null && editingRoute.vehicleId) {
+        setVehicles((prev) =>
+          prev.map((vehicle) =>
+            vehicle.id === editingRoute.vehicleId
+              ? { ...vehicle, currentKm: nextVehicleKm }
+              : vehicle
+          )
+        );
+      }
+
+      fecharEdicaoRota();
+      setSuccessMsg("Rota atualizada com sucesso.");
+    } catch (error) {
+      console.error("Erro ao editar rota:", error);
+      setErrorMsg("Erro ao atualizar rota. Tente novamente.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="app-page">
+      {/* Cabeçalho */}
+      <PageHeader
+        eyebrow="Operacao em campo"
+        title="Rotas da frota"
+        description="Inicie, acompanhe e finalize rotas em um fluxo mais claro, com historico, status e leitura operacional em tempo real."
+        icon={RouteIcon}
+        badges={
+          <>
+            <span className="app-chip">
+              <span className="h-2 w-2 rounded-full bg-yellow-300" />
+              {totalRotas} rotas no historico
+            </span>
+            <span className="app-chip border-blue-300/20 bg-blue-400/10 text-blue-100">
+              <span className="h-2 w-2 rounded-full bg-blue-300" />
+              {rotasEmAndamento.length} em andamento
+            </span>
+            <span className="app-chip">
+              <span className="h-2 w-2 rounded-full bg-red-400" />
+              {rotasLongasEmAndamento.length} longa(s)
+            </span>
+          </>
+        }
+        actions={
+          <Button
+            onClick={() => {
+              resetForm();
+              setFinishingRoute(null);
+              setCancelingRoute(null);
+              fecharEdicaoRota();
+              setFormOpen(true);
+            }}
+          >
+            + Nova rota
+          </Button>
+        }
+      />
 
       {/* Resumo + Formulário */}
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1.1fr)] gap-4">
+      {errorMsg ? <StatusBanner tone="error">{errorMsg}</StatusBanner> : null}
+      {successMsg ? <StatusBanner tone="success">{successMsg}</StatusBanner> : null}
+
+      <div className="hidden grid grid-cols-1 gap-4">
         {/* Resumo em cards */}
-        <div className="space-y-4">
-          <Card className="p-4 bg-neutral-950 border border-neutral-800">
+        <div className="hidden space-y-4">
+          <Card className="app-panel gap-0 overflow-hidden py-0">
+            <div className="border-b border-border px-5 py-5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-700 dark:text-yellow-200">
+                Resumo operacional
+              </p>
+              <h2 className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+                Indicadores principais da operacao
+              </h2>
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                Leitura mais executiva para saber volume, ritmo de fechamento e pontos de atencao.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2 xl:grid-cols-4 md:p-5">
+              <div className="app-panel-muted p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Em andamento
+                  </p>
+                  <Activity className="h-4 w-4 text-blue-600 dark:text-blue-300" />
+                </div>
+                <p className="mt-3 text-2xl font-semibold text-slate-950 dark:text-white">
+                  {rotasEmAndamento.length}
+                </p>
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  {filteredActiveRoutes.length} rota(s) visiveis com os filtros ativos.
+                </p>
+              </div>
+
+              <div className="app-panel-muted p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Rotas longas
+                  </p>
+                  <Clock className="h-4 w-4 text-yellow-600 dark:text-yellow-300" />
+                </div>
+                <p className="mt-3 text-2xl font-semibold text-slate-950 dark:text-white">
+                  {rotasLongasEmAndamento.length}
+                </p>
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  Abertas ha mais de 8 horas.
+                </p>
+              </div>
+
+              <div className="app-panel-muted p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    KM medio
+                  </p>
+                  <Gauge className="h-4 w-4 text-blue-600 dark:text-blue-300" />
+                </div>
+                <p className="mt-3 text-2xl font-semibold text-slate-950 dark:text-white">
+                  {kmMedioFinalizado.toFixed(1)} km
+                </p>
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  Media por rota finalizada no historico atual.
+                </p>
+              </div>
+
+              <div className="app-panel-muted p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Taxa cancelamento
+                  </p>
+                  <XCircle className="h-4 w-4 text-red-500 dark:text-red-300" />
+                </div>
+                <p className="mt-3 text-2xl font-semibold text-slate-950 dark:text-white">
+                  {taxaCancelamento.toFixed(1)}%
+                </p>
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  {rotasCanceladas.length} cancelada(s) em {totalRotas} rotas.
+                </p>
+              </div>
+            </div>
+          </Card>
+
+          <Card className="hidden">
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
               <div className="rounded-lg bg-neutral-900 border border-neutral-700 p-3">
                 <p className="text-[11px] text-gray-400 uppercase tracking-wide">
@@ -965,24 +1556,24 @@ export default function RotasPage() {
         {/* Formulário de nova rota no topo direito */}
         <div className="space-y-4">
           {formOpen && !finishingRoute && !cancelingRoute && (
-            <Card className="p-4 bg-neutral-900 border border-neutral-800">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-lg font-semibold text-yellow-400">
+            <Card className="app-panel gap-0 overflow-hidden py-0">
+              <div className="flex items-center justify-between border-b border-border px-5 py-5">
+                <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
                   Nova rota
                 </h2>
-                <span className="text-[11px] text-gray-500">
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
                   Preencha os dados e inicie a rota
                 </span>
               </div>
 
-              <form onSubmit={handleCriarRota} className="space-y-3">
+              <form onSubmit={handleCriarRota} className="space-y-4 p-4 md:p-5">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs text-gray-400 mb-1">
+                    <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">
                       Veículo
                     </label>
                     <select
-                      className="w-full rounded-md bg-neutral-950 border border-neutral-700 px-3 py-2 text-sm text-gray-100"
+                      className="app-select"
                       value={selectedVehicleId}
                       onChange={(e) => setSelectedVehicleId(e.target.value)}
                     >
@@ -996,16 +1587,16 @@ export default function RotasPage() {
                   </div>
 
                   <div>
-                    <label className="block text-xs text-gray-400 mb-1">
+                    <label className="block text-xs text-slate-500 dark:text-slate-400 mb-1">
                       Motorista
                     </label>
                     <select
-                      className="w-full rounded-md bg-neutral-950 border border-neutral-700 px-3 py-2 text-sm text-gray-100"
+                      className="app-select"
                       value={selectedDriverId}
                       onChange={(e) => setSelectedDriverId(e.target.value)}
                     >
                       <option value="">Selecione um motorista...</option>
-                      {drivers.map((d) => (
+                  {availableDriversForRoute.map((d) => (
                         <option key={d.id} value={d.id}>
                           {d.name} ({d.storeId})
                         </option>
@@ -1017,21 +1608,19 @@ export default function RotasPage() {
                     placeholder="Origem (opcional)"
                     value={origem}
                     onChange={(e) => setOrigem(e.target.value)}
-                    className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
                   />
 
                   <Input
                     placeholder="Destino (opcional)"
                     value={destino}
                     onChange={(e) => setDestino(e.target.value)}
-                    className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
                   />
 
                   <Input
                     placeholder="KM inicial (deixe em branco para usar o KM atual do veículo)"
                     value={startKmInput}
                     onChange={(e) => setStartKmInput(e.target.value)}
-                    className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500 md:col-span-2"
+                    className="md:col-span-2"
                   />
                 </div>
 
@@ -1048,13 +1637,12 @@ export default function RotasPage() {
                   <Button
                     type="submit"
                     disabled={saving}
-                    className="bg-yellow-500 hover:bg-yellow-400 text-black font-semibold text-sm"
                   >
                     {saving ? "Salvando..." : "Iniciar rota"}
                   </Button>
                   <Button
                     type="button"
-                    className="bg-red-600 hover:bg-red-500 text-white text-xs"
+                    variant="outline"
                     onClick={() => {
                       setFormOpen(false);
                       resetForm();
@@ -1066,6 +1654,39 @@ export default function RotasPage() {
               </form>
             </Card>
           )}
+
+          {!formOpen && !finishingRoute && !cancelingRoute && (
+            <Card className="app-panel gap-0 overflow-hidden py-0">
+              <div className="border-b border-border px-5 py-5">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-700 dark:text-yellow-200">
+                  Acesso rapido
+                </p>
+                <h2 className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+                  Abra o formulario apenas quando precisar registrar uma nova saida
+                </h2>
+              </div>
+
+              <div className="space-y-4 p-4 md:p-5">
+                <div className="app-panel-muted p-4">
+                  <p className="text-sm text-slate-600 dark:text-slate-300">
+                    Use esta lateral como area de acao principal. O restante da tela fica dedicado ao acompanhamento das rotas ativas e ao historico.
+                  </p>
+                </div>
+
+                <Button
+                  onClick={() => {
+                    resetForm();
+                    setFinishingRoute(null);
+                    setCancelingRoute(null);
+                    fecharEdicaoRota();
+                    setFormOpen(true);
+                  }}
+                >
+                  Abrir formulario de rota
+                </Button>
+              </div>
+            </Card>
+          )}
         </div>
       </div>
 
@@ -1073,28 +1694,115 @@ export default function RotasPage() {
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1.2fr)] gap-4">
         {/* Esquerda: rotas em andamento */}
         <div className="space-y-4">
-          <Card className="p-4 bg-neutral-950 border border-neutral-800">
-            <div className="flex items-center justify-between mb-3">
+          <Card className="app-panel p-4 md:p-5">
+            <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <div className="p-2 rounded-full bg-yellow-500/10">
-                  <Activity className="w-4 h-4 text-yellow-400" />
+                <div className="rounded-full bg-yellow-500/10 p-2">
+                  <Activity className="h-4 w-4 text-yellow-500 dark:text-yellow-300" />
                 </div>
-                <p className="text-sm font-semibold text-gray-100">
+                <p className="text-sm font-semibold text-slate-950 dark:text-white">
                   Rotas em andamento
                 </p>
               </div>
-              <span className="text-[11px] text-gray-500">
-                {rotasEmAndamento.length} rota(s)
+              <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                {filteredActiveRoutes.length} rota(s)
               </span>
             </div>
 
-            {rotasEmAndamento.length === 0 ? (
-              <p className="text-sm text-gray-400">
-                Nenhuma rota em andamento no momento.
+            <div className="mb-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
+              <div className="relative">
+                <Input
+                  value={activeSearch}
+                  onChange={(e) => setActiveSearch(e.target.value)}
+                  placeholder="Buscar por placa, motorista, origem ou loja"
+                  className="pr-9"
+                />
+                <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <select
+                  className="app-select"
+                  value={activeStoreFilter}
+                  onChange={(e) => setActiveStoreFilter(e.target.value)}
+                >
+                  <option value="todas">Todas as lojas</option>
+                  {activeStoreOptions.map((store) => (
+                    <option key={store} value={store}>
+                      {store}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  className="app-select"
+                  value={activeDriverFilter}
+                  onChange={(e) => setActiveDriverFilter(e.target.value)}
+                >
+                  <option value="todos">Todos os motoristas</option>
+                  {activeDriverOptions.map(([id, name]) => (
+                    <option key={id} value={id}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  className="app-select"
+                  value={activeDurationFilter}
+                  onChange={(e) =>
+                    setActiveDurationFilter(e.target.value as "todas" | "4h" | "8h")
+                  }
+                >
+                  <option value="todas">Qualquer duracao</option>
+                  <option value="4h">4h ou mais</option>
+                  <option value="8h">8h ou mais</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="mb-4 flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant={showOnlyMyActiveRoutes ? "default" : "outline"}
+                className={
+                  showOnlyMyActiveRoutes
+                    ? "bg-yellow-400 text-black hover:bg-yellow-300 dark:bg-yellow-300 dark:text-black"
+                    : ""
+                }
+                onClick={() => setShowOnlyMyActiveRoutes((prev) => !prev)}
+              >
+                {showOnlyMyActiveRoutes ? "Mostrando minhas rotas" : "Mostrar so minhas rotas"}
+              </Button>
+
+              {(activeSearch ||
+                activeStoreFilter !== "todas" ||
+                activeDriverFilter !== "todos" ||
+                activeDurationFilter !== "todas" ||
+                showOnlyMyActiveRoutes) && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setActiveSearch("");
+                    setActiveStoreFilter("todas");
+                    setActiveDriverFilter("todos");
+                    setActiveDurationFilter("todas");
+                    setShowOnlyMyActiveRoutes(false);
+                  }}
+                >
+                  Limpar filtros
+                </Button>
+              )}
+            </div>
+
+            {filteredActiveRoutes.length === 0 ? (
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                Nenhuma rota em andamento encontrada com os filtros atuais.
               </p>
             ) : (
               <div className="space-y-2">
-                {rotasEmAndamento.map((r) => {
+                {filteredActiveRoutes.map((r) => {
                   const owner = isOwner(r);
                   const canManage = userCanManageRoute(r);
 
@@ -1147,23 +1855,14 @@ export default function RotasPage() {
                             {r.startKm} km
                           </span>
                         </p>
-                        <div className="flex gap-2">
+                        <div className="flex flex-wrap gap-2">
+                          {isAdmin && (
+                            <ActionIconButton action="edit" onClick={() => abrirEditarRota(r)} />
+                          )}
                           {canManage && (
                             <>
-                              <Button
-                                size="sm"
-                                className="bg-green-500 hover:bg-green-400 text-black text-[11px] h-7 px-3"
-                                onClick={() => abrirFinalizarRota(r)}
-                              >
-                                Finalizar
-                              </Button>
-                              <Button
-                                size="sm"
-                                className="bg-red-600 hover:bg-red-500 text-white text-[11px] h-7 px-3"
-                                onClick={() => abrirCancelarRota(r)}
-                              >
-                                Cancelar
-                              </Button>
+                              <ActionIconButton action="complete" onClick={() => abrirFinalizarRota(r)} />
+                              <ActionIconButton action="cancel" onClick={() => abrirCancelarRota(r)} />
                             </>
                           )}
                         </div>
@@ -1173,6 +1872,87 @@ export default function RotasPage() {
                 })}
               </div>
             )}
+          </Card>
+
+          <Card className="app-panel gap-0 overflow-hidden py-0">
+            <div className="border-b border-border px-5 py-5">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-yellow-400/15 dark:bg-yellow-300/10">
+                  <History className="h-5 w-5 text-yellow-600 dark:text-yellow-200" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+                    Fechamento e historico
+                  </h2>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">
+                    Indicadores de volume e encerramento da operacao.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-4 p-4 md:p-5">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="app-panel-muted p-4">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    KM rodado
+                  </p>
+                  <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
+                    {totalKmRodado.toFixed(1)} km
+                  </p>
+                </div>
+                <div className="app-panel-muted p-4">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Tempo medio
+                  </p>
+                  <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
+                    {formatDurationHours(tempoMedioFinalizacao)}
+                  </p>
+                </div>
+                <div className="app-panel-muted p-4">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Finalizadas
+                  </p>
+                  <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
+                    {rotasFinalizadas.length}
+                  </p>
+                </div>
+                <div className="app-panel-muted p-4">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Veiculos que rodaram
+                  </p>
+                  <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
+                    {uniqueVehiclesCount}
+                  </p>
+                </div>
+              </div>
+
+              {rotasLongasEmAndamento.length > 0 ? (
+                <div className="rounded-2xl border border-yellow-300/60 bg-yellow-400/10 p-4 dark:border-yellow-300/20 dark:bg-yellow-300/10">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 text-yellow-700 dark:text-yellow-200" />
+                    <p className="text-sm font-semibold text-slate-950 dark:text-white">
+                      Pontos que pedem atencao
+                    </p>
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {rotasLongasEmAndamento.slice(0, 3).map((route) => (
+                      <div
+                        key={route.id}
+                        className="rounded-xl border border-yellow-300/40 bg-white/70 px-3 py-2 text-sm text-slate-700 dark:border-yellow-300/15 dark:bg-black/30 dark:text-slate-200"
+                      >
+                        <span className="font-mono">{route.vehiclePlate}</span> · {route.driverName} ·{" "}
+                        {formatDurationHours(getHoursOpen(route.startAt))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="app-panel-muted rounded-2xl p-4 text-sm text-slate-500 dark:text-slate-400">
+                  Nenhuma rota longa no momento. A operacao esta dentro do esperado.
+                </div>
+              )}
+            </div>
           </Card>
         </div>
 
@@ -1231,12 +2011,121 @@ export default function RotasPage() {
               </div>
             )}
           </Card>
+
+          <div className="space-y-4">
+          <Card className="app-panel gap-0 overflow-hidden py-0">
+            <div className="border-b border-border px-5 py-5">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-blue-500/10 dark:bg-blue-500/15">
+                    <Gauge className="h-5 w-5 text-blue-600 dark:text-blue-300" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+                      Veiculos disponiveis agora
+                    </h2>
+                    <p className="text-sm text-slate-500 dark:text-slate-400">
+                      Leitura rapida dos veiculos prontos para nova saida.
+                    </p>
+                  </div>
+                </div>
+
+                <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-[11px] font-medium text-blue-700 dark:border-blue-400/20 dark:bg-blue-500/10 dark:text-blue-200">
+                  {availableVehiclesNow.length} livre(s)
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-4 p-4 md:p-5">
+              {availableVehiclesNow.length === 0 ? (
+                <div className="app-panel-muted rounded-2xl p-4 text-sm text-slate-500 dark:text-slate-400">
+                  Nenhum veiculo disponivel no momento. Todos estao em rota ou em manutencao.
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-3">
+                    {availableVehiclesNow.slice(0, 5).map((vehicle) => (
+                      <div
+                        key={vehicle.id}
+                        className="rounded-2xl border border-border bg-white/80 px-4 py-3 dark:border-white/10 dark:bg-white/[0.04]"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-slate-950 dark:text-white">
+                              <span className="font-mono">{vehicle.plate}</span> · {vehicle.model}
+                            </p>
+                            <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
+                              <span className="inline-flex items-center gap-1">
+                                <MapPin className="h-3.5 w-3.5 text-yellow-500 dark:text-yellow-300" />
+                                {vehicle.storeId || "Loja nao informada"}
+                              </span>
+                              <span className="inline-flex items-center gap-1">
+                                <Gauge className="h-3.5 w-3.5 text-blue-600 dark:text-blue-300" />
+                                {vehicle.currentKm != null ? `${vehicle.currentKm} km` : "KM nao informado"}
+                              </span>
+                            </div>
+                          </div>
+
+                          <span className="shrink-0 rounded-full border border-yellow-300/70 bg-yellow-400/15 px-2.5 py-1 text-[11px] font-medium text-yellow-700 dark:border-yellow-300/20 dark:bg-yellow-300/10 dark:text-yellow-200">
+                            Pronto para saida
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {availableVehiclesNow.length > 5 ? (
+                    <div className="app-panel-muted rounded-2xl px-4 py-3 text-xs text-slate-500 dark:text-slate-400">
+                      Mostrando 5 de {availableVehiclesNow.length} veiculos disponiveis no momento.
+                    </div>
+                  ) : null}
+
+                  {false && vehicleStatusData.map((status) => {
+                  const percent = status.total
+                    ? Math.round((status.value / status.total) * 100)
+                    : 0;
+
+                  const accentClass =
+                    status.name === "Disponíveis"
+                      ? "bg-yellow-400 dark:bg-yellow-300"
+                      : status.name === "Em rota"
+                      ? "bg-blue-500 dark:bg-blue-300"
+                      : "bg-slate-900 dark:bg-white";
+
+                  return (
+                    <div key={status.name} className="space-y-2">
+                      <div className="flex items-center justify-between gap-3 text-sm">
+                        <span className="font-medium text-slate-700 dark:text-slate-200">
+                          {status.name}
+                        </span>
+                        <span className="text-slate-500 dark:text-slate-400">
+                          {status.value} de {status.total}
+                        </span>
+                      </div>
+                      <div className="h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
+                        <div
+                          className={`h-full rounded-full ${accentClass}`}
+                          style={{ width: `${percent}%` }}
+                        />
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        {percent}% da frota nesta situacao.
+                      </p>
+                    </div>
+                  );
+                  })}
+                </>
+              )}
+            </div>
+          </Card>
+
+          </div>
         </div>
       </div>
 
       {/* ÁREA DESTACADA PARA FINALIZAR / CANCELAR ROTA */}
-      {(finishingRoute || cancelingRoute) && (
-        <div ref={actionSectionRef} className="space-y-4">
+      {false && (finishingRoute || cancelingRoute) && (
+        <div className="space-y-4">
           <Card className="p-4 bg-neutral-950 border border-yellow-500/60 shadow-lg shadow-yellow-500/20">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
               <div>
@@ -1245,9 +2134,9 @@ export default function RotasPage() {
                 </p>
                 <h2 className="text-xl font-bold text-gray-100">
                   {finishingRoute
-                    ? `Finalizar rota do veículo ${finishingRoute.vehiclePlate}`
+                    ? `Finalizar rota do veículo ${finishingRoute?.vehiclePlate ?? "-"}`
                     : cancelingRoute
-                    ? `Cancelar rota do veículo ${cancelingRoute.vehiclePlate}`
+                    ? `Cancelar rota do veículo ${cancelingRoute?.vehiclePlate ?? "-"}`
                     : "Gerenciar rota"}
                 </h2>
                 <p className="text-xs text-gray-400 mt-1 max-w-xl">
@@ -1365,11 +2254,11 @@ export default function RotasPage() {
                     disabled={saving}
                     className="bg-red-600 hover:bg-red-500 text-white font-semibold text-sm"
                   >
-                    {saving ? "Cancelando..." : "Confirmar cancelamento"}
+                    {saving ? "Cancelando..." : "Cancelar"}
                   </Button>
                   <Button
                     type="button"
-                    className="bg-neutral-800 hover:bg-neutral-700 text-gray-100 text-xs"
+                    variant="destructive"
                     onClick={() => {
                       setCancelingRoute(null);
                       setCancelReasonInput("");
@@ -1377,7 +2266,7 @@ export default function RotasPage() {
                       setSuccessMsg("");
                     }}
                   >
-                    Voltar sem cancelar
+                    Cancelar
                   </Button>
                 </div>
               </form>
@@ -1386,8 +2275,592 @@ export default function RotasPage() {
         </div>
       )}
 
+      <Dialog
+        open={formOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setFormOpen(false);
+            resetForm();
+            setErrorMsg("");
+          }
+        }}
+      >
+        <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto border-blue-100 bg-white dark:border-yellow-400/10 dark:bg-[#08080a]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-slate-950 dark:text-white">
+              <RouteIcon className="h-5 w-5 text-blue-600 dark:text-yellow-200" />
+              Nova rota
+            </DialogTitle>
+            <DialogDescription>
+              Preencha os dados principais para iniciar uma nova saida da frota.
+            </DialogDescription>
+          </DialogHeader>
+
+          <form onSubmit={handleCriarRota} className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                  Veiculo
+                </label>
+                <select
+                  className="app-select"
+                  value={selectedVehicleId}
+                  onChange={(e) => setSelectedVehicleId(e.target.value)}
+                >
+                  <option value="">Selecione um veiculo disponivel...</option>
+                  {availableVehiclesForRoute.map((vehicle) => (
+                    <option key={vehicle.id} value={vehicle.id}>
+                      {vehicle.plate} · {vehicle.model} ({vehicle.storeId})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                  Motorista
+                </label>
+                <select
+                  className="app-select"
+                  value={selectedDriverId}
+                  onChange={(e) => setSelectedDriverId(e.target.value)}
+                >
+                  <option value="">Selecione um motorista...</option>
+                  {availableDriversForRoute.map((driver) => (
+                    <option key={driver.id} value={driver.id}>
+                      {driver.name} ({driver.storeId})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                  Origem
+                </label>
+                <Input
+                  value={origem}
+                  onChange={(e) => setOrigem(e.target.value)}
+                  placeholder="Origem da rota"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                  Destino
+                </label>
+                <Input
+                  value={destino}
+                  onChange={(e) => setDestino(e.target.value)}
+                  placeholder="Destino da rota"
+                />
+              </div>
+
+              <div className="md:col-span-2">
+                <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                  KM inicial
+                </label>
+                <Input
+                  value={startKmInput}
+                  onChange={(e) => setStartKmInput(e.target.value)}
+                  placeholder="Deixe em branco para usar o KM atual do veiculo"
+                />
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() => {
+                  setFormOpen(false);
+                  resetForm();
+                  setErrorMsg("");
+                }}
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="submit"
+                disabled={saving}
+                className="bg-yellow-400 text-black hover:bg-yellow-300 dark:bg-yellow-300 dark:text-black"
+              >
+                {saving ? "Iniciando..." : "Iniciar rota"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!finishingRoute}
+        onOpenChange={(open) => {
+          if (!open) {
+            setFinishingRoute(null);
+            setEndKmInput("");
+            setEndDestinoInput("");
+            setObsInput("");
+            setErrorMsg("");
+          }
+        }}
+      >
+        <DialogContent className="max-w-xl border-blue-100 bg-white dark:border-yellow-400/10 dark:bg-[#08080a]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-slate-950 dark:text-white">
+              <CheckCircle2 className="h-5 w-5 text-yellow-600 dark:text-yellow-200" />
+              Finalizar rota
+            </DialogTitle>
+            <DialogDescription>
+              Confira KM final, destino e observacoes antes de encerrar a rota.
+            </DialogDescription>
+          </DialogHeader>
+
+          {finishingRoute ? (
+            <form onSubmit={handleFinalizarRota} className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="app-panel-muted p-4">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Veiculo
+                  </p>
+                  <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
+                    {finishingRoute.vehiclePlate} · {finishingRoute.vehicleModel}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    {finishingRoute.storeId || "Loja nao informada"}
+                  </p>
+                </div>
+
+                <div className="app-panel-muted p-4">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Inicio da rota
+                  </p>
+                  <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
+                    {formatRouteDateTime(finishingRoute.startAt)}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    KM inicial: <span className="font-mono">{finishingRoute.startKm} km</span>
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                    KM final
+                  </label>
+                  <Input
+                    value={endKmInput}
+                    onChange={(e) => setEndKmInput(e.target.value)}
+                    placeholder="Informe o KM final"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                    Destino
+                  </label>
+                  <Input
+                    value={endDestinoInput}
+                    onChange={(e) => setEndDestinoInput(e.target.value)}
+                    placeholder="Destino final da rota"
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                    Observacoes
+                  </label>
+                  <textarea
+                    value={obsInput}
+                    onChange={(e) => setObsInput(e.target.value)}
+                    placeholder="Registre ocorrencias, retorno do veiculo ou detalhes do encerramento."
+                    className="app-textarea min-h-[110px]"
+                  />
+                </div>
+              </div>
+
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={() => {
+                    setFinishingRoute(null);
+                    setEndKmInput("");
+                    setEndDestinoInput("");
+                    setObsInput("");
+                    setErrorMsg("");
+                  }}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={saving}
+                  className="bg-emerald-600 text-white hover:bg-emerald-500"
+                >
+                  {saving ? "Finalizando..." : "Concluir"}
+                </Button>
+              </DialogFooter>
+            </form>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!cancelingRoute}
+        onOpenChange={(open) => {
+          if (!open) {
+            setCancelingRoute(null);
+            setCancelReasonInput("");
+            setErrorMsg("");
+          }
+        }}
+      >
+        <DialogContent className="max-w-xl border-blue-100 bg-white dark:border-yellow-400/10 dark:bg-[#08080a]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-slate-950 dark:text-white">
+              <XCircle className="h-5 w-5 text-red-500 dark:text-red-300" />
+              Cancelar rota
+            </DialogTitle>
+            <DialogDescription>
+              Use o cancelamento apenas quando a rota nao deve entrar como concluida no historico.
+            </DialogDescription>
+          </DialogHeader>
+
+          {cancelingRoute ? (
+            <form onSubmit={handleConfirmarCancelamento} className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="app-panel-muted p-4">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Veiculo
+                  </p>
+                  <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
+                    {cancelingRoute.vehiclePlate} · {cancelingRoute.vehicleModel}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    {cancelingRoute.storeId || "Loja nao informada"}
+                  </p>
+                </div>
+
+                <div className="app-panel-muted p-4">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Referencia
+                  </p>
+                  <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
+                    {formatRouteDateTime(cancelingRoute.startAt)}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    KM inicial: <span className="font-mono">{cancelingRoute.startKm} km</span>
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                  Motivo do cancelamento
+                </label>
+                <textarea
+                  value={cancelReasonInput}
+                  onChange={(e) => setCancelReasonInput(e.target.value)}
+                  placeholder="Explique o motivo para manter o historico mais confiavel."
+                  className="app-textarea min-h-[110px]"
+                />
+              </div>
+
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={() => {
+                    setCancelingRoute(null);
+                    setCancelReasonInput("");
+                    setErrorMsg("");
+                  }}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={saving}
+                  variant="destructive"
+                >
+                  {saving ? "Cancelando..." : "Cancelar"}
+                </Button>
+              </DialogFooter>
+            </form>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!deletingRoute}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeletingRoute(null);
+            setErrorMsg("");
+          }
+        }}
+      >
+        <DialogContent className="max-w-lg border-blue-100 bg-white dark:border-yellow-400/10 dark:bg-[#08080a]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-slate-950 dark:text-white">
+              <XCircle className="h-5 w-5 text-red-500 dark:text-red-300" />
+              Excluir rota
+            </DialogTitle>
+            <DialogDescription>
+              Esta acao remove a rota do historico. Use apenas quando o registro estiver incorreto.
+            </DialogDescription>
+          </DialogHeader>
+
+          {deletingRoute ? (
+            <div className="space-y-4">
+              <div className="app-panel-muted p-4">
+                <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                  Rota selecionada
+                </p>
+                <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
+                  {deletingRoute.vehiclePlate} · {deletingRoute.vehicleModel}
+                </p>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  {deletingRoute.driverName || "Motorista nao informado"} · {formatRouteDateTime(deletingRoute.startAt)}
+                </p>
+              </div>
+
+              <DialogFooter>
+                <Button type="button" variant="destructive" onClick={() => setDeletingRoute(null)}>
+                  Cancelar
+                </Button>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  disabled={saving}
+                  onClick={handleExcluirRota}
+                >
+                  {saving ? "Excluindo..." : "Excluir"}
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!editingRoute}
+        onOpenChange={(open) => {
+          if (!open) fecharEdicaoRota();
+        }}
+      >
+        <DialogContent className="max-h-[calc(100vh-2rem)] max-w-2xl overflow-hidden border-blue-100 bg-white p-0 dark:border-yellow-400/10 dark:bg-[#08080a]">
+          <div className="flex max-h-[calc(100vh-2rem)] flex-col">
+            <DialogHeader className="shrink-0 border-b border-border px-6 py-5">
+              <DialogTitle className="flex items-center gap-2 text-slate-950 dark:text-white">
+                <PencilLine className="h-5 w-5 text-blue-600 dark:text-yellow-200" />
+                Editar rota
+              </DialogTitle>
+              <DialogDescription>
+                Ajuste dados da rota para correção operacional sem alterar o fluxo de encerramento.
+              </DialogDescription>
+            </DialogHeader>
+
+            {editingRoute ? (
+              <form onSubmit={handleSalvarEdicaoRota} className="flex min-h-0 flex-1 flex-col">
+                <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="app-panel-muted p-4">
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                        Veiculo
+                      </p>
+                      <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
+                        {editingRoute.vehiclePlate} · {editingRoute.vehicleModel}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                        {editingRoute.storeId || "Loja nao informada"}
+                      </p>
+                    </div>
+
+                    <div className="app-panel-muted p-4">
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                        Status
+                      </p>
+                      <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
+                        {editingRoute.status === "em_andamento" ? "Em andamento" : "Finalizada"}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                        Inicio: {formatRouteDateTime(editingRoute.startAt)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                        Motorista
+                      </label>
+                      <select
+                        className="app-select"
+                        value={editDriverId}
+                        onChange={(e) => setEditDriverId(e.target.value)}
+                      >
+                        <option value="">Selecione um motorista...</option>
+                        {availableDriversForEditing.map((driver) => (
+                          <option key={driver.id} value={driver.id}>
+                            {driver.name} ({driver.storeId})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                        KM inicial
+                      </label>
+                      <Input
+                        value={editStartKmInput}
+                        onChange={(e) => setEditStartKmInput(e.target.value)}
+                        placeholder="KM inicial"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                        Origem
+                      </label>
+                      <Input
+                        value={editOrigemInput}
+                        onChange={(e) => setEditOrigemInput(e.target.value)}
+                        placeholder="Origem da rota"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                        Destino
+                      </label>
+                      <Input
+                        value={editDestinoInput}
+                        onChange={(e) => setEditDestinoInput(e.target.value)}
+                        placeholder="Destino da rota"
+                      />
+                    </div>
+
+                    {editingRoute.status === "finalizada" ? (
+                      <div className="md:col-span-2">
+                        <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                          KM final
+                        </label>
+                        <Input
+                          value={editEndKmInput}
+                          onChange={(e) => setEditEndKmInput(e.target.value)}
+                          placeholder="KM final"
+                        />
+                        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                          Distancia recalculada automaticamente ao salvar.
+                        </p>
+                      </div>
+                    ) : null}
+
+                    {editingRoute.status === "finalizada" ? (
+                      <div className="md:col-span-2">
+                        <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                          Motivo da alteracao
+                        </label>
+                        <textarea
+                          value={editReasonInput}
+                          onChange={(e) => setEditReasonInput(e.target.value)}
+                          placeholder="Explique por que esta rota finalizada esta sendo ajustada."
+                          className="app-textarea min-h-[90px]"
+                        />
+                        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                          Este motivo sera salvo junto com a auditoria da edicao.
+                        </p>
+                      </div>
+                    ) : null}
+
+                    <div className="md:col-span-2">
+                      <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                        Observacoes
+                      </label>
+                      <textarea
+                        value={editObsInput}
+                        onChange={(e) => setEditObsInput(e.target.value)}
+                        placeholder="Registre ajustes, ocorrencias ou detalhes importantes da rota."
+                        className="app-textarea min-h-[110px]"
+                      />
+                    </div>
+
+                    {editingRoute.updatedAt ? (
+                      <div className="md:col-span-2 app-panel-muted p-4">
+                        <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                          Ultima alteracao
+                        </p>
+                        <p className="mt-2 text-sm text-slate-700 dark:text-slate-200">
+                          {editingRoute.updatedByName || "Admin"} em {formatRouteDateTime(editingRoute.updatedAt)}
+                        </p>
+                        {editingRoute.editReason ? (
+                          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                            Motivo anterior: {editingRoute.editReason}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <DialogFooter className="shrink-0 border-t border-border bg-white px-6 py-4 dark:bg-[#08080a]">
+                  <Button type="button" variant="destructive" onClick={fecharEdicaoRota}>
+                    Cancelar
+                  </Button>
+                  <Button type="submit" disabled={saving}>
+                    {saving ? "Salvando..." : "Salvar alteracoes"}
+                  </Button>
+                </DialogFooter>
+              </form>
+            ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Histórico de rotas */}
-      <Card className="p-4 bg-neutral-950 border border-neutral-800 space-y-4">
+      <Card className="app-panel gap-0 overflow-hidden py-0">
+        <div className="border-b border-border px-5 py-5">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-yellow-400/15 dark:bg-yellow-300/10">
+              <History className="h-5 w-5 text-yellow-600 dark:text-yellow-200" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+                Historico de rotas
+              </h2>
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                Consulte encerramentos, cancelamentos e ajustes administrativos.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-4 p-4 md:p-5">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h3 className="text-base font-semibold text-slate-950 dark:text-white">
+              {showAllHistoryRoutes ? "Historico de rotas" : "Rotas de hoje"}
+            </h3>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              {showAllHistoryRoutes
+                ? "Veja o historico completo com filtros por mes, status e motorista."
+                : "Lista rapida das rotas encerradas ou canceladas hoje."}
+            </p>
+          </div>
+
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setShowAllHistoryRoutes((prev) => !prev)}
+          >
+            {showAllHistoryRoutes ? "Voltar para hoje" : "Ver todas"}
+          </Button>
+        </div>
+
+        {showAllHistoryRoutes && (
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div className="flex-1 max-w-md">
             <label className="block text-xs text-gray-400 mb-1">
@@ -1494,23 +2967,153 @@ export default function RotasPage() {
             </div>
           </div>
         </div>
+        )}
 
         <div className="mt-2">
           <h2 className="text-sm font-semibold text-gray-100 mb-2 flex items-center gap-2">
-            Histórico de rotas
+            {showAllHistoryRoutes ? "Historico filtrado" : "Rotas registradas hoje"}
             <span className="text-[11px] text-gray-500">
-              ({filteredHistoryRoutes.length} registro(s) no período filtrado)
+              ({displayedHistoryRoutes.length} registro(s))
             </span>
           </h2>
 
         {loading ? (
             <p className="text-sm text-gray-400">Carregando rotas...</p>
-          ) : filteredHistoryRoutes.length === 0 ? (
+          ) : displayedHistoryRoutes.length === 0 ? (
             <p className="text-sm text-gray-400">
-              Nenhuma rota encontrada com os filtros atuais.
+              {showAllHistoryRoutes
+                ? "Nenhuma rota encontrada com os filtros atuais."
+                : "Nenhuma rota registrada hoje."}
             </p>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+            <div className="space-y-3 md:hidden">
+              {displayedHistoryRoutes.map((r) => {
+                const distancia =
+                  r.status === "cancelada"
+                    ? null
+                    : r.distanceKm != null
+                    ? r.distanceKm
+                    : r.endKm != null
+                    ? r.endKm - r.startKm
+                    : null;
+
+                const isObsEditing = editingObsRouteId === r.id;
+                const canEditObs = userCanManageRoute(r);
+
+                return (
+                  <div
+                    key={`${r.id}-mobile`}
+                    className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm shadow-slate-200/50 dark:border-white/10 dark:bg-[#050505]"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-950 dark:text-white">
+                          <span className="font-mono">{r.vehiclePlate}</span> · {r.vehicleModel}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                          {formatRouteDateTime(r.startAt)} · {r.driverName}
+                        </p>
+                      </div>
+
+                      <div>
+                        {r.status === "finalizada" ? (
+                          <span className="rounded-full border border-green-500/40 bg-green-500/10 px-2.5 py-1 text-[11px] font-semibold text-green-600 dark:text-green-300">
+                            Finalizada
+                          </span>
+                        ) : (
+                          <span className="rounded-full border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-[11px] font-semibold text-red-600 dark:text-red-300">
+                            Cancelada
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="mt-3 space-y-2 text-sm text-slate-600 dark:text-slate-300">
+                      <p>
+                        <span className="font-medium text-slate-950 dark:text-white">Trajeto:</span>{" "}
+                        {(r.origem || "-") + " -> " + (r.destino || "-")}
+                      </p>
+                      <p>
+                        <span className="font-medium text-slate-950 dark:text-white">KM:</span>{" "}
+                        <span className="font-mono">
+                          {r.startKm} km{r.endKm != null ? ` / ${r.endKm} km` : ""}
+                        </span>
+                      </p>
+                      <p>
+                        <span className="font-medium text-slate-950 dark:text-white">Distancia:</span>{" "}
+                        {distancia != null ? `${distancia.toFixed(1)} km` : "-"}
+                      </p>
+
+                      {r.cancelReason ? (
+                        <p className="text-red-600 dark:text-red-300">
+                          Motivo: {r.cancelReason}
+                        </p>
+                      ) : null}
+
+                      {r.updatedAt ? (
+                        <div className="rounded-xl border border-blue-200/70 bg-blue-50/60 px-3 py-2 text-xs text-blue-700 dark:border-blue-400/20 dark:bg-blue-500/10 dark:text-blue-200">
+                          Editada por {r.updatedByName || "Admin"} em {formatRouteDateTime(r.updatedAt)}
+                          {r.editReason ? ` · ${r.editReason}` : ""}
+                        </div>
+                      ) : null}
+
+                      {r.observacoes ? (
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          Obs: {r.observacoes}
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {isAdmin && r.status !== "cancelada" ? (
+                        <ActionIconButton action="edit" onClick={() => abrirEditarRota(r)} />
+                      ) : null}
+                      {!isAdmin && canEditObs ? (
+                        <Button
+                          size="sm"
+                          className="bg-yellow-400 text-black hover:bg-yellow-300 dark:bg-yellow-300 dark:text-black"
+                          onClick={() => abrirObsRoute(r)}
+                        >
+                          Obs
+                        </Button>
+                      ) : null}
+                      {isAdmin ? (
+                        <ActionIconButton action="delete" onClick={() => abrirExcluirRota(r)} />
+                      ) : null}
+                    </div>
+
+                    {isObsEditing ? (
+                      <form onSubmit={handleSalvarObs} className="mt-4 space-y-2 rounded-xl border border-slate-200 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-black/30">
+                        <textarea
+                          value={obsDraft}
+                          onChange={(e) => setObsDraft(e.target.value)}
+                          readOnly={!canEditObs}
+                          placeholder={
+                            canEditObs
+                              ? "Digite ou ajuste as observacoes da rota..."
+                              : "Observacoes registradas pelo responsavel pela rota."
+                          }
+                          className="app-textarea min-h-[90px]"
+                        />
+                        <div className="flex flex-wrap justify-end gap-2">
+                          {canEditObs ? (
+                            <Button type="submit" disabled={saving}>
+                              {saving ? "Salvando..." : "Salvar observacoes"}
+                            </Button>
+                          ) : null}
+                          <Button type="button" variant="destructive" onClick={fecharObsRoute}>
+                            Cancelar
+                          </Button>
+                        </div>
+                      </form>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="hidden overflow-x-auto md:block">
               <table className="w-full text-sm border-collapse">
                 <thead>
                   <tr className="text-left border-b border-neutral-800 text-gray-400">
@@ -1530,7 +3133,7 @@ export default function RotasPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredHistoryRoutes.map((r) => {
+                  {displayedHistoryRoutes.map((r) => {
                     const distancia =
                       r.status === "cancelada"
                         ? null
@@ -1571,6 +3174,16 @@ export default function RotasPage() {
                                 ({r.storeId})
                               </span>
                             )}
+                            {r.updatedAt && (
+                              <div className="mt-1 text-[11px] text-blue-600 dark:text-blue-200">
+                                Editada por {r.updatedByName || "Admin"} em {formatRouteDateTime(r.updatedAt)}
+                              </div>
+                            )}
+                            {r.editReason && (
+                              <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                                Motivo da alteracao: {r.editReason}
+                              </div>
+                            )}
                           </td>
                           <td className="py-2 px-2 text-gray-200 hidden md:table-cell">
                             {r.driverName}
@@ -1598,7 +3211,7 @@ export default function RotasPage() {
                               : "-"}
                           </td>
                           <td className="py-2 px-2 text-gray-300 hidden xl:table-cell">
-                            {obsResumo ? obsTexto : "—"}
+                            {obsResumo ? obsTexto : "-"}
                           </td>
                           <td className="py-2 px-2">
                             {r.status === "finalizada" && (
@@ -1613,8 +3226,11 @@ export default function RotasPage() {
                             )}
                           </td>
                           <td className="py-2 pl-2 text-right">
-                            <div className="flex justify-end gap-2">
-                              {(isAdmin || canEditObs) && (
+                            <div className="flex flex-wrap justify-end gap-2">
+                              {isAdmin && r.status !== "cancelada" && (
+                                <ActionIconButton action="edit" onClick={() => abrirEditarRota(r)} />
+                              )}
+                              {!isAdmin && canEditObs && (
                                 <Button
                                   size="sm"
                                   className="bg-yellow-400 hover:bg-yellow-300 text-black text-xs h-7 px-3"
@@ -1624,14 +3240,7 @@ export default function RotasPage() {
                                 </Button>
                               )}
                               {isAdmin && (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="border-red-500 text-red-300 hover:bg-red-500/10 text-xs h-7 px-3"
-                                  onClick={() => handleExcluirRota(r)}
-                                >
-                                  Excluir
-                                </Button>
+                                <ActionIconButton action="delete" onClick={() => abrirExcluirRota(r)} />
                               )}
                             </div>
                           </td>
@@ -1639,7 +3248,7 @@ export default function RotasPage() {
 
                         {isObsEditing && (
                           <tr className="border-b border-neutral-900">
-                            <td colSpan={8} className="bg-neutral-900 px-3 py-3">
+                            <td colSpan={9} className="bg-neutral-900 px-3 py-3">
                               <form
                                 onSubmit={handleSalvarObs}
                                 className="space-y-2"
@@ -1698,9 +3307,13 @@ export default function RotasPage() {
                 </tbody>
               </table>
             </div>
+            </>
           )}
+        </div>
         </div>
       </Card>
     </div>
   );
 }
+
+

@@ -1,564 +1,515 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useAuth } from "@/context/AuthContext";
 import { db } from "@/lib/firebase";
 import {
   collection,
-  getDocs,
-  query,
-  where,
   doc,
   getDoc,
+  getDocs,
 } from "firebase/firestore";
-import { useAuth } from "@/context/AuthContext";
-
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-
+import { PageHeader } from "@/components/layout/PageHeader";
+import { StatusBanner } from "@/components/layout/StatusBanner";
 import {
   ArrowLeft,
-  FileText,
+  CalendarRange,
   Car,
-  Fuel,
-  Wrench,
-  Map as MapIcon,
   Download,
+  FileText,
+  Fuel,
+  MapPinned,
+  Route as RouteIcon,
+  Users,
+  Wrench,
 } from "lucide-react";
-
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
+import {
+  buildReportAnalytics,
+  formatMonthLabel,
+  getMonthBounds,
+  type ReportMaintenanceRecord,
+  type ReportRefuelRecord,
+  type ReportRouteRecord,
+  type ReportVehicleRecord,
+} from "@/lib/reporting";
 
-type RouteStatus = "em_andamento" | "finalizada";
-
-interface RouteItem {
-  id: string;
-  vehicleId: string;
-  vehiclePlate: string;
-  vehicleModel: string;
-  driverName: string;
-  origem?: string | null;
-  destino?: string | null;
-  startKm: number;
-  endKm?: number | null;
-  distanceKm?: number | null;
-  startAt?: string | null;
-  endAt?: string | null;
-  status: RouteStatus;
-  responsibleUserId: string;
-}
-
-interface RefuelItem {
-  id: string;
-  vehicleId: string;
-  vehiclePlate: string;
-  liters: number;
-  totalCost: number;
-  date?: string | null;
-  responsibleUserId: string;
-}
-
-interface MaintenanceItem {
-  id: string;
-  vehicleId: string;
-  vehiclePlate: string;
-  cost: number;
-  date?: string | null;
-  type?: string;
-  status: "em_andamento" | "concluida";
-  responsibleUserId: string;
-}
-
-interface MonthlySummaryData {
+interface MonthlySummaryDocument {
   monthKey: string;
   year: number;
   month: number;
-  totalKmRodado: number;
-  totalCombustivel: number;
-  totalManutencao: number;
-  kmMedioPorVeiculo: number;
-  routesCount?: number;
-  refuelsCount?: number;
-  maintenancesCount?: number;
+  createdAt?: string | null;
 }
 
-interface VehicleOption {
-  id: string;
-  plate: string;
-  model: string;
-  storeId?: string;
-  currentKm?: number;
+const currencyFormatter = new Intl.NumberFormat("pt-BR", {
+  style: "currency",
+  currency: "BRL",
+});
 
-  // modelo antigo
-  responsibleUserId?: string;
-  responsibleUserName?: string;
+const numberFormatter = new Intl.NumberFormat("pt-BR", {
+  maximumFractionDigits: 1,
+});
 
-  // modelo novo (multi-responsável)
-  responsibleUserIds?: string[];
+const percentFormatter = new Intl.NumberFormat("pt-BR", {
+  style: "percent",
+  maximumFractionDigits: 1,
+});
+
+const chartTooltipStyle = {
+  backgroundColor: "#07111f",
+  border: "1px solid rgba(245, 158, 11, 0.35)",
+  borderRadius: 16,
+  color: "#e5e7eb",
+  fontSize: 12,
+};
+
+function formatCurrency(value: number) {
+  return currencyFormatter.format(value || 0);
 }
+
+function formatNumber(value: number, suffix = "") {
+  return `${numberFormatter.format(value || 0)}${suffix}`;
+}
+
+function KpiTile({
+  label,
+  value,
+  helper,
+  icon: Icon,
+  accent,
+}: {
+  label: string;
+  value: string;
+  helper: string;
+  icon: React.ComponentType<{ className?: string }>;
+  accent: string;
+}) {
+  return (
+    <Card className="app-panel-muted p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">
+            {label}
+          </p>
+          <p className="mt-2 text-2xl font-semibold text-slate-950 dark:text-white">{value}</p>
+          <p className="mt-2 text-sm text-slate-500 dark:text-slate-300">{helper}</p>
+        </div>
+        <div className={`rounded-2xl border px-3 py-3 ${accent}`}>
+          <Icon className="h-5 w-5" />
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function EmptyPanel({ text }: { text: string }) {
+  return (
+    <div className="flex min-h-40 items-center justify-center rounded-2xl border border-dashed border-border bg-white/70 px-6 text-center text-sm text-slate-500 dark:border-white/10 dark:bg-slate-950/40 dark:text-slate-400">
+      {text}
+    </div>
+  );
+}
+
+const reportPanelClass = "app-panel p-5";
+const reportPanelWideClass = "app-panel p-5 md:p-6";
+const reportTableHeadClass =
+  "border-b border-slate-200 text-left text-slate-500 dark:border-white/10 dark:text-slate-400";
+const reportTableRowClass =
+  "border-b border-slate-200/80 text-slate-700 transition hover:bg-slate-50 dark:border-white/5 dark:text-slate-200 dark:hover:bg-white/[0.03]";
 
 export default function MonthlyClosingPage() {
   const params = useParams<{ monthKey: string }>();
   const router = useRouter();
   const { user } = useAuth();
 
-  const [summary, setSummary] = useState<MonthlySummaryData | null>(null);
-  const [routes, setRoutes] = useState<RouteItem[]>([]);
-  const [refuels, setRefuels] = useState<RefuelItem[]>([]);
-  const [maintenances, setMaintenances] = useState<MaintenanceItem[]>([]);
-  const [vehicles, setVehicles] = useState<VehicleOption[]>([]);
-
+  const [summaryDoc, setSummaryDoc] = useState<MonthlySummaryDocument | null>(null);
+  const [vehicles, setVehicles] = useState<ReportVehicleRecord[]>([]);
+  const [routes, setRoutes] = useState<ReportRouteRecord[]>([]);
+  const [refuels, setRefuels] = useState<ReportRefuelRecord[]>([]);
+  const [maintenances, setMaintenances] = useState<ReportMaintenanceRecord[]>(
+    []
+  );
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [generatingPdf, setGeneratingPdf] = useState(false);
 
   const isAdmin = user?.role === "admin";
+  const monthKey = params?.monthKey ?? "";
+  const monthBounds = useMemo(() => getMonthBounds(monthKey), [monthKey]);
 
   useEffect(() => {
     if (!user) {
       router.replace("/login");
-      return;
     }
   }, [user, router]);
 
-  // Helper: está no mês do fechamento?
-  function isInMonth(
-    isoDate: string | null | undefined,
-    year: number,
-    month: number
-  ) {
-    if (!isoDate) return false;
-    const d = new Date(isoDate);
-    if (Number.isNaN(d.getTime())) return false;
-    return d.getFullYear() === year && d.getMonth() + 1 === month;
-  }
-
-  // helper: verifica se o usuário pode usar / ver um veículo
-  function userCanUseVehicle(vehicle: VehicleOption | undefined): boolean {
-    if (!user || !vehicle) return false;
-    if (user.role === "admin") return true;
-
-    const singleMatch = vehicle.responsibleUserId === user.id;
-    const multiMatch = vehicle.responsibleUserIds?.includes(user.id) ?? false;
-
-    return singleMatch || multiMatch;
-  }
-
   useEffect(() => {
     async function loadData() {
-      if (!user || !params?.monthKey) return;
+      if (!user || !monthKey) return;
 
       try {
         setLoading(true);
         setErrorMsg("");
 
-        // monthKey: "YYYY-MM"
-        const [yearStr, monthStr] = params.monthKey.split("-");
-        const year = Number(yearStr);
-        const month = Number(monthStr);
-        if (!year || !month) {
-          setErrorMsg("Fechamento inválido.");
-          setLoading(false);
-          return;
-        }
-
-        // 1) Carrega resumo salvo em monthlySummaries
-        const summaryRef = doc(db, "monthlySummaries", params.monthKey);
-        const summarySnap = await getDoc(summaryRef);
+        const summarySnap = await getDoc(doc(db, "monthlySummaries", monthKey));
         if (!summarySnap.exists()) {
           setErrorMsg("Fechamento mensal não encontrado.");
           setLoading(false);
           return;
         }
 
-        const sData = summarySnap.data() as any;
-        let summaryObj: MonthlySummaryData = {
-          monthKey: sData.monthKey ?? params.monthKey,
-          year: Number(sData.year ?? year),
-          month: Number(sData.month ?? month),
-          totalKmRodado: Number(sData.totalKmRodado ?? 0),
-          totalCombustivel: Number(sData.totalCombustivel ?? 0),
-          totalManutencao: Number(sData.totalManutencao ?? 0),
-          kmMedioPorVeiculo: Number(sData.kmMedioPorVeiculo ?? 0),
-          routesCount: Number(sData.routesCount ?? 0),
-          refuelsCount: Number(sData.refuelsCount ?? 0),
-          maintenancesCount: Number(sData.maintenancesCount ?? 0),
-        };
-        setSummary(summaryObj);
+        const summaryData = summarySnap.data();
+        const createdAtDate =
+          summaryData.createdAt && summaryData.createdAt.toDate
+            ? summaryData.createdAt.toDate()
+            : null;
 
-        // 2) Carrega veículos (pra aplicar lógica de múltiplos responsáveis)
+        setSummaryDoc({
+          monthKey: summaryData.monthKey ?? monthKey,
+          year: Number(summaryData.year ?? 0),
+          month: Number(summaryData.month ?? 0),
+          createdAt: createdAtDate ? createdAtDate.toISOString() : null,
+        });
+
         const vehiclesSnap = await getDocs(collection(db, "vehicles"));
-        const vList: VehicleOption[] = vehiclesSnap.docs.map((d) => {
-          const data = d.data() as any;
+        const allVehicles: ReportVehicleRecord[] = vehiclesSnap.docs.map((docItem) => {
+          const data = docItem.data();
+
           return {
-            id: d.id,
+            id: docItem.id,
             plate: data.plate,
             model: data.model,
             storeId: data.storeId,
-            currentKm: data.currentKm,
+            currentKm: Number(data.currentKm ?? 0),
             responsibleUserId: data.responsibleUserId,
             responsibleUserName: data.responsibleUserName,
             responsibleUserIds: Array.isArray(data.responsibleUserIds)
               ? data.responsibleUserIds
               : undefined,
+            responsibleUsers: Array.isArray(data.responsibleUsers)
+              ? data.responsibleUsers
+              : undefined,
           };
         });
-        setVehicles(vList);
-        const vehicleById = new Map<string, VehicleOption>();
-        vList.forEach((v) => vehicleById.set(v.id, v));
 
-        // 3) Carrega rotas (todas) e filtra pelo mês + permissão
+        const userCanUseVehicle = (vehicle: ReportVehicleRecord) => {
+          if (!user) return false;
+          if (user.role === "admin") return true;
+
+          const singleMatch = vehicle.responsibleUserId === user.id;
+          const multiMatch = vehicle.responsibleUserIds?.includes(user.id) ?? false;
+
+          return singleMatch || multiMatch;
+        };
+
+        const visibleVehicles = isAdmin
+          ? allVehicles
+          : allVehicles.filter(userCanUseVehicle);
+
+        const vehicleById = new Map<string, ReportVehicleRecord>();
+        allVehicles.forEach((vehicle) => vehicleById.set(vehicle.id, vehicle));
+
         const routesSnap = await getDocs(collection(db, "routes"));
-        const allRoutes: RouteItem[] = routesSnap.docs.map((d) => {
-          const data = d.data() as any;
+        const allRoutes: ReportRouteRecord[] = routesSnap.docs.map((docItem) => {
+          const data = docItem.data();
+
           return {
-            id: d.id,
+            id: docItem.id,
             vehicleId: data.vehicleId,
             vehiclePlate: data.vehiclePlate,
             vehicleModel: data.vehicleModel,
+            driverId: data.driverId,
             driverName: data.driverName,
-            origem: data.origem ?? null,
-            destino: data.destino ?? null,
+            storeId: data.storeId ?? data.vehicleStoreId ?? null,
+            responsibleUserId: data.responsibleUserId,
+            responsibleUserName: data.responsibleUserName ?? null,
             startKm: Number(data.startKm ?? 0),
-            endKm: data.endKm ?? null,
+            endKm: data.endKm != null ? Number(data.endKm) : null,
             distanceKm:
               data.distanceKm != null ? Number(data.distanceKm) : null,
             startAt: data.startAt ?? null,
             endAt: data.endAt ?? null,
-            status: (data.status ?? "em_andamento") as RouteStatus,
-            responsibleUserId: data.responsibleUserId,
-          };
-        });
-
-        const monthRoutesRaw = allRoutes.filter((r) =>
-          isInMonth(
-            r.startAt || r.endAt || null,
-            summaryObj.year,
-            summaryObj.month
-          )
-        );
-
-        const visibleRoutes = isAdmin
-          ? monthRoutesRaw
-          : monthRoutesRaw.filter((r) => {
-              if (r.responsibleUserId === user.id) return true;
-              const v = vehicleById.get(r.vehicleId);
-              return userCanUseVehicle(v);
-            });
-
-        visibleRoutes.sort((a, b) =>
-          (a.startAt || "").localeCompare(b.startAt || "")
-        );
-        setRoutes(visibleRoutes);
-
-        // 4) ABASTECIMENTOS (fuelings)
-        const refuelSnap = await getDocs(collection(db, "fuelings"));
-        const allRefuels: RefuelItem[] = refuelSnap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            vehicleId: data.vehicleId,
-            vehiclePlate: data.vehiclePlate,
-            liters: Number(data.liters ?? 0),
-            totalCost: Number(
-              data.totalCost != null ? data.totalCost : data.total ?? 0
-            ),
-            date: data.date ?? null,
-            responsibleUserId: data.responsibleUserId,
-          };
-        });
-
-        const monthRefuelsRaw = allRefuels.filter((f) =>
-          isInMonth(f.date, summaryObj.year, summaryObj.month)
-        );
-
-        const visibleRefuels = isAdmin
-          ? monthRefuelsRaw
-          : monthRefuelsRaw.filter((f) => {
-              if (f.responsibleUserId === user.id) return true;
-              const v = vehicleById.get(f.vehicleId);
-              return userCanUseVehicle(v);
-            });
-
-        setRefuels(visibleRefuels);
-
-        // 5) MANUTENÇÕES
-        const maintSnap = await getDocs(collection(db, "maintenances"));
-        const allMaint: MaintenanceItem[] = maintSnap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            vehicleId: data.vehicleId,
-            vehiclePlate: data.vehiclePlate,
-            cost: Number(data.cost ?? 0),
-            date: data.date ?? null,
-            type: data.type,
+            canceledAt: data.canceledAt ?? null,
             status: (data.status ?? "em_andamento") as
               | "em_andamento"
-              | "concluida",
-            responsibleUserId: data.responsibleUserId,
+              | "finalizada"
+              | "cancelada",
           };
         });
 
-        const monthMaintRaw = allMaint.filter((m) =>
-          isInMonth(m.date, summaryObj.year, summaryObj.month)
-        );
-
-        const visibleMaint = isAdmin
-          ? monthMaintRaw
-          : monthMaintRaw.filter((m) => {
-              if (m.responsibleUserId === user.id) return true;
-              const v = vehicleById.get(m.vehicleId);
-              return userCanUseVehicle(v);
+        const visibleRoutes = isAdmin
+          ? allRoutes
+          : allRoutes.filter((route) => {
+              if (route.responsibleUserId === user.id) return true;
+              const vehicle = vehicleById.get(route.vehicleId);
+              return vehicle ? userCanUseVehicle(vehicle) : false;
             });
 
-        setMaintenances(visibleMaint);
+        const refuelsSnap = await getDocs(collection(db, "fuelings"));
+        const allRefuels: ReportRefuelRecord[] = refuelsSnap.docs.map((docItem) => {
+          const data = docItem.data();
 
-        // 6) Se não for admin, recalcula o resumo para bater com o que o usuário vê
-        if (!isAdmin) {
-          const totalKm = visibleRoutes.reduce((acc, r) => {
-            if (r.distanceKm != null) return acc + r.distanceKm;
-            if (r.endKm != null) return acc + (r.endKm - r.startKm);
-            return acc;
-          }, 0);
-
-          const totalCombustivel = visibleRefuels.reduce(
-            (acc, f) => acc + (f.totalCost || 0),
-            0
-          );
-
-          const totalManutencao = visibleMaint.reduce(
-            (acc, m) => acc + (m.cost || 0),
-            0
-          );
-
-          const kmPorVeiculoMap = new Map<string, number>();
-          for (const r of visibleRoutes) {
-            const key = r.vehicleId || r.vehiclePlate;
-            const dist =
-              r.distanceKm != null
-                ? r.distanceKm
-                : r.endKm != null
-                ? r.endKm - r.startKm
-                : 0;
-            kmPorVeiculoMap.set(key, (kmPorVeiculoMap.get(key) || 0) + dist);
-          }
-          const qtdVeiculosComMovimento = kmPorVeiculoMap.size;
-          const kmMedioPorVeiculo =
-            qtdVeiculosComMovimento > 0
-              ? totalKm / qtdVeiculosComMovimento
-              : 0;
-
-          summaryObj = {
-            ...summaryObj,
-            totalKmRodado: totalKm,
-            totalCombustivel,
-            totalManutencao,
-            kmMedioPorVeiculo,
-            routesCount: visibleRoutes.length,
-            refuelsCount: visibleRefuels.length,
-            maintenancesCount: visibleMaint.length,
+          return {
+            id: docItem.id,
+            vehicleId: data.vehicleId,
+            vehiclePlate: data.vehiclePlate,
+            vehicleModel: data.vehicleModel,
+            storeId: data.storeId,
+            liters: Number(data.liters ?? 0),
+            totalCost: Number(data.totalCost ?? data.total ?? 0),
+            pricePerLiter:
+              data.pricePerLiter != null
+                ? Number(data.pricePerLiter)
+                : data.pricePerL != null
+                ? Number(data.pricePerL)
+                : null,
+            odometerKm:
+              data.odometerKm != null ? Number(data.odometerKm) : null,
+            date: data.date ?? null,
+            stationName: data.stationName ?? null,
+            responsibleUserId: data.responsibleUserId,
+            responsibleUserName: data.responsibleUserName ?? null,
           };
-          setSummary(summaryObj);
-        }
+        });
+
+        const visibleRefuels = isAdmin
+          ? allRefuels
+          : allRefuels.filter((refuel) => {
+              if (refuel.responsibleUserId === user.id) return true;
+              const vehicle = vehicleById.get(refuel.vehicleId);
+              return vehicle ? userCanUseVehicle(vehicle) : false;
+            });
+
+        const maintenancesSnap = await getDocs(collection(db, "maintenances"));
+        const allMaintenances: ReportMaintenanceRecord[] = maintenancesSnap.docs.map(
+          (docItem) => {
+            const data = docItem.data();
+
+            return {
+              id: docItem.id,
+              vehicleId: data.vehicleId,
+              vehiclePlate: data.vehiclePlate,
+              vehicleModel: data.vehicleModel,
+              storeId: data.storeId,
+              cost: Number(data.cost ?? 0),
+              type: data.type,
+              status: (data.status ?? "em_andamento") as
+                | "em_andamento"
+                | "concluida",
+              date: data.date ?? null,
+              endDate: data.endDate ?? null,
+              odometerKm:
+                data.odometerKm != null ? Number(data.odometerKm) : null,
+              endKm: data.endKm != null ? Number(data.endKm) : null,
+              responsibleUserId: data.responsibleUserId,
+              responsibleUserName: data.responsibleUserName ?? null,
+            };
+          }
+        );
+
+        const visibleMaintenances = isAdmin
+          ? allMaintenances
+          : allMaintenances.filter((maintenance) => {
+              if (maintenance.responsibleUserId === user.id) return true;
+              const vehicle = vehicleById.get(maintenance.vehicleId);
+              return vehicle ? userCanUseVehicle(vehicle) : false;
+            });
+
+        setVehicles(visibleVehicles);
+        setRoutes(visibleRoutes);
+        setRefuels(visibleRefuels);
+        setMaintenances(visibleMaintenances);
       } catch (error) {
         console.error("Erro ao carregar fechamento mensal:", error);
-        setErrorMsg("Erro ao carregar o fechamento mensal.");
+        setErrorMsg("Não foi possível carregar os dados do fechamento.");
       } finally {
         setLoading(false);
       }
     }
 
     loadData();
-  }, [user, params?.monthKey, isAdmin]);
+  }, [user, monthKey, isAdmin, router]);
 
-  const labelMes = useMemo(() => {
-    if (!summary) return "";
-    return `${String(summary.month).padStart(2, "0")}/${summary.year}`;
-  }, [summary]);
+  const analytics = useMemo(
+    () =>
+      buildReportAnalytics({
+        monthKey,
+        routes,
+        refuels,
+        maintenances,
+        vehicles,
+      }),
+    [monthKey, routes, refuels, maintenances, vehicles]
+  );
 
-  // Computa distância da rota
-  function getRouteDistance(r: RouteItem): number {
-    if (r.distanceKm != null) return Number(r.distanceKm);
-    if (r.endKm != null) return Number(r.endKm) - Number(r.startKm ?? 0);
-    return 0;
-  }
+  const topVehicles = analytics.vehicleRows.filter((item) => item.hasActivity);
+  const topResponsibles = analytics.responsibleRows;
+  const topDrivers = analytics.driverRows;
 
   if (!user) return null;
 
-  // Helper pra carregar imagem da logo como dataURL
-  function loadImageAsDataUrl(url: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          reject(new Error("Não foi possível obter o contexto do canvas"));
-          return;
-        }
-        ctx.drawImage(img, 0, 0);
-        const dataUrl = canvas.toDataURL("image/png");
-        resolve(dataUrl);
-      };
-      img.onerror = (err) => reject(err);
-      img.src = url;
-    });
-  }
-
-  // ===== Gerar PDF =====
   async function handleGeneratePdf() {
-    if (!summary) return;
+    if (!summaryDoc) return;
+
     try {
       setGeneratingPdf(true);
-      setErrorMsg("");
 
-      const docPdf = new jsPDF({
+      const pdf = new jsPDF({
         orientation: "portrait",
         unit: "mm",
         format: "a4",
       });
 
-      const marginLeft = 14;
-      let currentY = 18;
+      pdf.setFillColor(15, 23, 42);
+      pdf.rect(0, 0, 210, 24, "F");
 
-      // 🔶 Logo no canto direito (usa favicon.png)
-      try {
-        const logoDataUrl = await loadImageAsDataUrl("/favicon.png");
-        docPdf.addImage(logoDataUrl, "PNG", 180, 10, 16, 16);
-      } catch {
-        // se não conseguir carregar a imagem, só segue sem logo
-      }
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(16);
+      pdf.text(`Fechamento da Frota · ${formatMonthLabel(monthKey)}`, 14, 15);
 
-      // Cabeçalho
-      docPdf.setFont("helvetica", "bold");
-      docPdf.setFontSize(16);
-      docPdf.text("GRUPO MM · MM FROTA", marginLeft, currentY);
-      currentY += 8;
+      pdf.setTextColor(100, 116, 139);
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(9);
+      pdf.text(`Gerado em ${new Date().toLocaleString("pt-BR")}`, 14, 21);
 
-      docPdf.setFontSize(11);
-      docPdf.setFont("helvetica", "normal");
-      docPdf.text(
-        `Fechamento mensal da frota - ${labelMes}`,
-        marginLeft,
-        currentY
-      );
-      currentY += 6;
-
-      if (user?.name) {
-        docPdf.setFontSize(9);
-        docPdf.text(`Gerado por: ${user.name}`, marginLeft, currentY);
-        currentY += 5;
-      }
-
-      const now = new Date();
-      docPdf.setFontSize(9);
-      docPdf.text(
-        `Data de geração: ${now.toLocaleString("pt-BR")}`,
-        marginLeft,
-        currentY
-      );
-      currentY += 8;
-
-      // Linha divisória
-      docPdf.setDrawColor(250, 204, 21);
-      docPdf.setLineWidth(0.5);
-      docPdf.line(marginLeft, currentY, 200, currentY);
-      currentY += 7;
-
-      // Resumo
-      docPdf.setFontSize(11);
-      docPdf.setFont("helvetica", "bold");
-      docPdf.text("Resumo geral do mês", marginLeft, currentY);
-      currentY += 6;
-
-      docPdf.setFont("helvetica", "normal");
-      docPdf.setFontSize(10);
-
-      const resumo = [
-        `Km rodado: ${summary.totalKmRodado.toFixed(1)} km`,
-        `Gasto com combustível: R$ ${summary.totalCombustivel.toFixed(2)}`,
-        `Gasto com manutenção: R$ ${summary.totalManutencao.toFixed(2)}`,
-        `Km médio por veículo: ${
-          summary.kmMedioPorVeiculo > 0
-            ? summary.kmMedioPorVeiculo.toFixed(2) + " km"
+      let cursorY = 34;
+      const summaryLines = [
+        `Custo total: ${formatCurrency(analytics.overview.totalCost)}`,
+        `Km rodado: ${formatNumber(analytics.overview.totalKm, " km")}`,
+        `Combustível: ${formatCurrency(analytics.overview.totalFuelCost)}`,
+        `Manutenção: ${formatCurrency(analytics.overview.totalMaintenanceCost)}`,
+        `Custo por km: ${
+          analytics.overview.costPerKm > 0
+            ? formatCurrency(analytics.overview.costPerKm)
             : "-"
         }`,
-        `Rotas no mês: ${summary.routesCount ?? routes.length}`,
-        `Abastecimentos no mês: ${summary.refuelsCount ?? refuels.length}`,
-        `Manutenções no mês: ${
-          summary.maintenancesCount ?? maintenances.length
+        `Consumo médio: ${
+          analytics.overview.kmPerLiter > 0
+            ? formatNumber(analytics.overview.kmPerLiter, " km/L")
+            : "-"
         }`,
+        `Rotas: ${analytics.overview.totalRoutes}`,
+        `Taxa de fechamento: ${percentFormatter.format(
+          analytics.overview.completionRate
+        )}`,
+        `Ticket médio abastecimento: ${
+          analytics.overview.avgFuelTicket > 0
+            ? formatCurrency(analytics.overview.avgFuelTicket)
+            : "-"
+        }`,
+        `Ticket médio manutenção: ${
+          analytics.overview.avgMaintenanceTicket > 0
+            ? formatCurrency(analytics.overview.avgMaintenanceTicket)
+            : "-"
+        }`,
+        `Veículos ativos: ${analytics.overview.activeVehicles}`,
       ];
 
-      resumo.forEach((line) => {
-        docPdf.text(line, marginLeft, currentY);
-        currentY += 5;
+      pdf.setTextColor(15, 23, 42);
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(12);
+      pdf.text("Resumo executivo", 14, cursorY);
+      cursorY += 6;
+
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(10);
+      summaryLines.forEach((line) => {
+        pdf.text(line, 14, cursorY);
+        cursorY += 5;
       });
 
-      currentY += 6;
+      autoTable(pdf, {
+        startY: cursorY + 4,
+        head: [["Veículo", "Km", "Combustível", "Manutenção", "Custo total"]],
+        body: topVehicles.slice(0, 10).map((vehicle) => [
+          vehicle.vehicleLabel,
+          formatNumber(vehicle.km, " km"),
+          formatCurrency(vehicle.fuelCost),
+          formatCurrency(vehicle.maintenanceCost),
+          formatCurrency(vehicle.totalCost),
+        ]),
+        headStyles: {
+          fillColor: [245, 158, 11],
+          textColor: [15, 23, 42],
+        },
+        styles: {
+          fontSize: 8.5,
+          cellPadding: 2.5,
+        },
+        margin: { left: 14, right: 14 },
+      });
 
-      // ===== TABELA DE ROTAS =====
-      if (routes.length > 0) {
-        docPdf.setFont("helvetica", "bold");
-        docPdf.setFontSize(11);
-        docPdf.text("Rotas do mês", marginLeft, currentY);
-        currentY += 5;
+      const pdfWithTables = pdf as jsPDF & {
+        lastAutoTable?: {
+          finalY: number;
+        };
+      };
 
-        autoTable(docPdf, {
-          startY: currentY,
-          head: [
-            [
-              "Data",
-              "Veículo",
-              "Motorista",
-              "Origem",
-              "Destino",
-              "Km início",
-              "Km fim",
-              "Km total",
-            ],
-          ],
-          body: routes.map((r) => [
-            r.startAt
-              ? new Date(r.startAt).toLocaleString("pt-BR", {
-                  day: "2-digit",
-                  month: "2-digit",
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })
-              : "-",
-            `${r.vehiclePlate} · ${r.vehicleModel}`,
-            r.driverName || "-",
-            r.origem || "-",
-            r.destino || "-",
-            r.startKm ? `${Number(r.startKm).toFixed(1)} km` : "-",
-            r.endKm != null ? `${Number(r.endKm).toFixed(1)} km` : "-",
-            `${getRouteDistance(r).toFixed(1)} km`,
-          ]),
-          styles: {
-            fontSize: 8,
-            textColor: [0, 0, 0],
-          },
-          headStyles: {
-            fillColor: [250, 204, 21], // amarelo
-            textColor: [0, 0, 0],
-          },
-          alternateRowStyles: {
-            fillColor: [40, 40, 40],
-            textColor: [255, 255, 255],
-          },
-          margin: { left: marginLeft, right: 10 },
-        });
-      }
+      autoTable(pdf, {
+        startY: (pdfWithTables.lastAutoTable?.finalY ?? cursorY + 4) + 8,
+        head: [["Responsável", "Km", "Combustível", "Manutenção", "Custo total"]],
+        body: topResponsibles.slice(0, 10).map((responsible) => [
+          responsible.responsibleName,
+          formatNumber(responsible.km, " km"),
+          formatCurrency(responsible.fuelCost),
+          formatCurrency(responsible.maintenanceCost),
+          formatCurrency(responsible.totalCost),
+        ]),
+        headStyles: {
+          fillColor: [56, 189, 248],
+          textColor: [15, 23, 42],
+        },
+        styles: {
+          fontSize: 8.5,
+          cellPadding: 2.5,
+        },
+        margin: { left: 14, right: 14 },
+      });
 
-      docPdf.save(`fechamento-${summary.monthKey}.pdf`);
+      autoTable(pdf, {
+        startY: (pdfWithTables.lastAutoTable?.finalY ?? cursorY + 20) + 8,
+        head: [["Motorista", "Km", "Rotas", "Média por rota", "Fechamento"]],
+        body: topDrivers.slice(0, 10).map((driver) => [
+          driver.driverName,
+          formatNumber(driver.km, " km"),
+          String(driver.routesCount),
+          driver.avgRouteDistance > 0
+            ? formatNumber(driver.avgRouteDistance, " km")
+            : "-",
+          percentFormatter.format(driver.completionRate),
+        ]),
+        headStyles: {
+          fillColor: [52, 211, 153],
+          textColor: [15, 23, 42],
+        },
+        styles: {
+          fontSize: 8.5,
+          cellPadding: 2.5,
+        },
+        margin: { left: 14, right: 14 },
+      });
+
+      pdf.save(`fechamento-${monthKey}.pdf`);
     } catch (error) {
       console.error("Erro ao gerar PDF:", error);
-      setErrorMsg("Erro ao gerar PDF do fechamento.");
+      setErrorMsg("Não foi possível gerar o PDF deste fechamento.");
     } finally {
       setGeneratingPdf(false);
     }
@@ -566,321 +517,505 @@ export default function MonthlyClosingPage() {
 
   if (loading) {
     return (
-      <Card className="p-4 bg-neutral-900 border border-neutral-800">
-        <p className="text-sm text-gray-300">Carregando fechamento...</p>
-      </Card>
+      <div className="app-page" data-report-page>
+        <PageHeader
+          eyebrow="Fechamento mensal"
+          title="Carregando fechamento do periodo"
+          description="Estamos reunindo os dados consolidados deste fechamento para montar a leitura executiva."
+          icon={FileText}
+          iconTone="yellow"
+        />
+        <Card className={reportPanelWideClass}>
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            Carregando fechamento...
+          </p>
+        </Card>
+      </div>
     );
   }
 
   if (errorMsg) {
     return (
-      <div className="space-y-4">
-        <Button
-          variant="outline"
-          className="border-neutral-700 text-gray-200 hover:bg-neutral-800 text-xs"
-          onClick={() => router.push("/relatorios")}
-        >
-          <ArrowLeft className="w-4 h-4 mr-1" />
-          Voltar para relatórios
-        </Button>
-        <p className="text-sm text-red-400 font-medium">{errorMsg}</p>
+      <div className="app-page" data-report-page>
+        <PageHeader
+          eyebrow="Fechamento mensal"
+          title="Nao foi possivel abrir este fechamento"
+          description="Confira o periodo selecionado ou volte para a central de relatorios para tentar novamente."
+          icon={FileText}
+          iconTone="yellow"
+          actions={
+            <Button
+              variant="outline"
+              className="border-slate-200 text-slate-700 hover:bg-slate-100 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/[0.06]"
+              onClick={() => router.push('/relatorios')}
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Voltar para relatorios
+            </Button>
+          }
+        />
+        <StatusBanner tone="error">{errorMsg}</StatusBanner>
       </div>
     );
   }
 
-  if (!summary) return null;
-
   return (
-    <div className="space-y-6">
-      {/* Cabeçalho da página */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-        <div>
-          <button
-            onClick={() => router.push("/relatorios")}
-            className="inline-flex items-center gap-1 text-xs text-gray-400 mb-2 hover:text-yellow-400"
-          >
-            <ArrowLeft className="w-3 h-3" />
-            Voltar para relatórios
-          </button>
-          <h1 className="text-2xl font-bold text-yellow-400 flex items-center gap-2">
-            <FileText className="w-6 h-6" />
-            Fechamento mensal · {labelMes}
-          </h1>
-          <p className="text-sm text-gray-300">
-            Resumo consolidado de rotas, abastecimentos e manutenções da frota
-            do Grupo MM nesse mês.
-          </p>
+    <div className="app-page" data-report-page>
+      <PageHeader
+        eyebrow="Fechamento mensal"
+        title={`Fechamento de ${formatMonthLabel(monthKey)}`}
+        description="Consulte o consolidado do periodo com custos, utilizacao da frota, desempenho operacional e historico do mes fechado."
+        icon={FileText}
+        iconTone="yellow"
+        actions={
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              className="border-slate-200 text-slate-700 hover:bg-slate-100 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/[0.06]"
+              onClick={() => router.push('/relatorios')}
+            >
+              <ArrowLeft className="h-4 w-4" />
+              Voltar para relatorios
+            </Button>
+            <Button
+              type="button"
+              onClick={handleGeneratePdf}
+              disabled={generatingPdf}
+            >
+              <Download className="h-4 w-4" />
+              {generatingPdf ? 'Gerando PDF...' : 'Baixar PDF'}
+            </Button>
+          </>
+        }
+        badges={
+          <>
+            <span className="app-chip">
+              <span className="h-2 w-2 rounded-full bg-yellow-300" />
+              Periodo: {monthBounds.startDate} ate {monthBounds.endDate}
+            </span>
+            {summaryDoc?.createdAt ? (
+              <span className="app-chip">
+                <span className="h-2 w-2 rounded-full bg-sky-300" />
+                Gerado em {new Date(summaryDoc.createdAt).toLocaleString('pt-BR')}
+              </span>
+            ) : null}
+            <span className="app-chip">
+              <span className="h-2 w-2 rounded-full bg-emerald-300" />
+              {isAdmin ? 'Visao corporativa' : 'Dados do seu escopo'}
+            </span>
+          </>
+        }
+      />
+
+      <Card className={reportPanelWideClass}>
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+            <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+              Competencia
+            </p>
+            <p className="mt-2 text-lg font-semibold text-slate-950 dark:text-white">
+              {formatMonthLabel(monthKey)}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+            <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+              Custo consolidado
+            </p>
+            <p className="mt-2 text-lg font-semibold text-slate-950 dark:text-white">
+              {formatCurrency(analytics.overview.totalCost)}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+            <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+              Km rodado
+            </p>
+            <p className="mt-2 text-lg font-semibold text-slate-950 dark:text-white">
+              {formatNumber(analytics.overview.totalKm, ' km')}
+            </p>
+          </div>
         </div>
-
-        <div className="flex flex-wrap gap-2">
-          <Button
-            type="button"
-            className="flex items-center gap-2 bg-yellow-500 hover:bg-yellow-400 text-black text-xs font-semibold"
-            onClick={handleGeneratePdf}
-            disabled={generatingPdf}
-          >
-            <Download className="w-4 h-4" />
-            {generatingPdf ? "Gerando PDF..." : "Baixar PDF do fechamento"}
-          </Button>
-        </div>
-      </div>
-
-      {/* Resumo principal (cards) */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card className="p-4 bg-neutral-950 border border-neutral-800 flex items-center justify-between">
-          <div>
-            <p className="text-xs text-gray-400 uppercase tracking-wide">
-              Km rodado no mês
-            </p>
-            <p className="text-2xl font-bold text-yellow-400">
-              {summary.totalKmRodado.toFixed(1)} km
-            </p>
-            <p className="text-[11px] text-gray-500">
-              Com base nas rotas registradas
-            </p>
-          </div>
-          <div className="p-3 rounded-2xl bg-yellow-500/10">
-            <MapIcon className="w-6 h-6 text-yellow-400" />
-          </div>
-        </Card>
-
-        <Card className="p-4 bg-neutral-950 border border-neutral-800 flex items-center justify-between">
-          <div>
-            <p className="text-xs text-gray-400 uppercase tracking-wide">
-              Combustível
-            </p>
-            <p className="text-2xl font-bold text-yellow-400">
-              R$ {summary.totalCombustivel.toFixed(2)}
-            </p>
-            <p className="text-[11px] text-gray-500">
-              {refuels.length} abastecimento(s)
-            </p>
-          </div>
-          <div className="p-3 rounded-2xl bg-yellow-500/10">
-            <Fuel className="w-6 h-6 text-yellow-400" />
-          </div>
-        </Card>
-
-        <Card className="p-4 bg-neutral-950 border border-neutral-800 flex items-center justify-between">
-          <div>
-            <p className="text-xs text-gray-400 uppercase tracking-wide">
-              Manutenções
-            </p>
-            <p className="text-2xl font-bold text-yellow-400">
-              R$ {summary.totalManutencao.toFixed(2)}
-            </p>
-            <p className="text-[11px] text-gray-500">
-              {maintenances.length} manutenção(ões)
-            </p>
-          </div>
-          <div className="p-3 rounded-2xl bg-yellow-500/10">
-            <Wrench className="w-6 h-6 text-yellow-400" />
-          </div>
-        </Card>
-
-        <Card className="p-4 bg-neutral-950 border border-neutral-800 flex items-center justify-between">
-          <div>
-            <p className="text-xs text-gray-400 uppercase tracking-wide">
-              Km médio por veículo
-            </p>
-            <p className="text-2xl font-bold text-yellow-400">
-              {summary.kmMedioPorVeiculo > 0
-                ? summary.kmMedioPorVeiculo.toFixed(2)
-                : "-"}
-            </p>
-            <p className="text-[11px] text-gray-500">
-              Considerando apenas veículos que rodaram no mês
-            </p>
-          </div>
-          <div className="p-3 rounded-2xl bg-yellow-500/10">
-            <Car className="w-6 h-6 text-yellow-400" />
-          </div>
-        </Card>
-      </div>
-
-      {/* Rotas do mês na tela */}
-      <Card className="p-4 bg-neutral-950 border border-neutral-800">
-        <div className="flex items-center gap-2 mb-3">
-          <div className="p-2 rounded-full bg-yellow-500/10">
-            <MapIcon className="w-4 h-4 text-yellow-400" />
-          </div>
-          <p className="text-sm font-semibold text-gray-100">
-            Rotas do mês · {routes.length} registro(s)
-          </p>
-        </div>
-
-        {routes.length === 0 ? (
-          <p className="text-sm text-gray-400">
-            Não há rotas registradas para este mês.
-          </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="text-left border-b border-neutral-800 text-gray-400">
-                  <th className="py-2 pr-2">Data início</th>
-                  <th className="py-2 px-2">Veículo</th>
-                  <th className="py-2 px-2">Motorista</th>
-                  <th className="py-2 px-2">Origem → Destino</th>
-                  <th className="py-2 px-2">Km início</th>
-                  <th className="py-2 px-2">Km fim</th>
-                  <th className="py-2 px-2">Km total</th>
-                  <th className="py-2 px-2">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {routes.map((r) => (
-                  <tr
-                    key={r.id}
-                    className="border-b border-neutral-900 hover:bg-neutral-800/60"
-                  >
-                    <td className="py-2 pr-2 text-gray-300">
-                      {r.startAt
-                        ? new Date(r.startAt).toLocaleString("pt-BR", {
-                            day: "2-digit",
-                            month: "2-digit",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })
-                        : "-"}
-                    </td>
-                    <td className="py-2 px-2 text-gray-100">
-                      <span className="font-mono">{r.vehiclePlate}</span> ·{" "}
-                      {r.vehicleModel}
-                    </td>
-                    <td className="py-2 px-2 text-gray-200">
-                      {r.driverName || "-"}
-                    </td>
-                    <td className="py-2 px-2 text-gray-200">
-                      {(r.origem ?? "-") + " → " + (r.destino ?? "-")}
-                    </td>
-                    <td className="py-2 px-2 text-gray-200">
-                      {r.startKm} km
-                    </td>
-                    <td className="py-2 px-2 text-gray-200">
-                      {r.endKm != null ? `${r.endKm} km` : "-"}
-                    </td>
-                    <td className="py-2 px-2 text-yellow-300">
-                      {getRouteDistance(r).toFixed(1)} km
-                    </td>
-                    <td className="py-2 px-2">
-                      <span
-                        className={`px-2 py-1 rounded-full text-[11px] font-semibold ${
-                          r.status === "finalizada"
-                            ? "bg-green-500/20 text-green-400"
-                            : "bg-blue-500/20 text-blue-400"
-                        }`}
-                      >
-                        {r.status === "finalizada"
-                          ? "Finalizada"
-                          : "Em andamento"}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
       </Card>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <KpiTile
+          label="Custo total"
+          value={formatCurrency(analytics.overview.totalCost)}
+          helper="Combustível e manutenção no mês fechado."
+          icon={FileText}
+          accent="border-amber-400/20 bg-amber-500/10 text-amber-300"
+        />
+        <KpiTile
+          label="Km rodado"
+          value={formatNumber(analytics.overview.totalKm, " km")}
+          helper="Quilometragem consolidada das rotas do mês."
+          icon={MapPinned}
+          accent="border-cyan-400/20 bg-cyan-500/10 text-cyan-300"
+        />
+        <KpiTile
+          label="Combustível"
+          value={formatCurrency(analytics.overview.totalFuelCost)}
+          helper={`${analytics.overview.refuelsCount} abastecimento(s) registrados.`}
+          icon={Fuel}
+          accent="border-amber-400/20 bg-amber-500/10 text-amber-300"
+        />
+        <KpiTile
+          label="Manutenção"
+          value={formatCurrency(analytics.overview.totalMaintenanceCost)}
+          helper={`${analytics.overview.maintenancesCount} manutenção(ões) no período.`}
+          icon={Wrench}
+          accent="border-sky-400/20 bg-sky-500/10 text-sky-300"
+        />
+      </div>
 
-      {/* Resumos rápidos de abastecimentos e manutenções */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <Card className="p-4 bg-neutral-950 border border-neutral-800">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="p-2 rounded-full bg-yellow-500/10">
-              <Fuel className="w-4 h-4 text-yellow-400" />
+      <div className="grid gap-4 xl:grid-cols-[1.3fr_1fr]">
+        <Card className={reportPanelClass}>
+          <div className="mb-5 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-[0.22em] text-slate-500">
+                Distribuição do custo
+              </p>
+              <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+                Participação de combustível e manutenção
+              </h2>
             </div>
-            <p className="text-sm font-semibold text-gray-100">
-              Abastecimentos do mês ({refuels.length})
-            </p>
+            <CalendarRange className="h-5 w-5 text-amber-300" />
           </div>
-          {refuels.length === 0 ? (
-            <p className="text-sm text-gray-400">
-              Nenhum abastecimento registrado neste mês.
-            </p>
+
+          {analytics.costComposition.length === 0 ? (
+            <EmptyPanel text="Sem custos registrados no fechamento selecionado." />
           ) : (
-            <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-              {refuels.map((f) => (
-                <div
-                  key={f.id}
-                  className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 bg-neutral-950/60 px-3 py-2"
-                >
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-gray-100 truncate">
-                      {f.vehiclePlate}
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      {f.date
-                        ? new Date(f.date).toLocaleString("pt-BR")
-                        : "-"}
+            <div className="grid gap-4 lg:grid-cols-[1fr_0.9fr]">
+              <div className="h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={analytics.costComposition}
+                      dataKey="value"
+                      nameKey="name"
+                      innerRadius={75}
+                      outerRadius={110}
+                      paddingAngle={4}
+                    >
+                      {analytics.costComposition.map((entry) => (
+                        <Cell key={entry.name} fill={entry.fill} />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      contentStyle={chartTooltipStyle}
+                      formatter={(value: number) => formatCurrency(value)}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="space-y-3">
+                {analytics.costComposition.map((item) => (
+                  <div
+                    key={item.name}
+                    className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
+                        <span
+                          className="h-2.5 w-2.5 rounded-full"
+                          style={{ backgroundColor: item.fill }}
+                        />
+                        {item.name}
+                      </div>
+                      <span className="text-sm font-medium text-slate-950 dark:text-white">
+                        {formatCurrency(item.value)}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs text-slate-400">
+                      {percentFormatter.format(item.value / analytics.overview.totalCost)}{" "}
+                      do custo total do fechamento.
                     </p>
                   </div>
-                  <div className="text-right text-xs">
-                    <p className="text-gray-400">
-                      {f.liters.toFixed(2)} L
-                    </p>
-                    <p className="font-semibold text-yellow-300">
-                      R$ {f.totalCost.toFixed(2)}
-                    </p>
-                  </div>
+                ))}
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+                  <p className="text-sm text-slate-400">Eficiência média do mês</p>
+                  <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
+                    {analytics.overview.kmPerLiter > 0
+                      ? formatNumber(analytics.overview.kmPerLiter, " km/L")
+                      : "-"}
+                  </p>
                 </div>
-              ))}
+              </div>
             </div>
           )}
         </Card>
 
-        <Card className="p-4 bg-neutral-950 border border-neutral-800">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="p-2 rounded-full bg-yellow-500/10">
-              <Wrench className="w-4 h-4 text-yellow-400" />
+        <Card className={reportPanelClass}>
+          <div className="mb-5 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-[0.22em] text-slate-500">
+                Indicadores do fechamento
+              </p>
+              <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+                Resumo operacional
+              </h2>
             </div>
-            <p className="text-sm font-semibold text-gray-100">
-              Manutenções do mês ({maintenances.length})
-            </p>
+            <RouteIcon className="h-5 w-5 text-emerald-300" />
           </div>
-          {maintenances.length === 0 ? (
-            <p className="text-sm text-gray-400">
-              Nenhuma manutenção registrado neste mês.
-            </p>
+
+          <div className="space-y-3">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+              <p className="text-sm text-slate-400">Custo por km</p>
+              <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
+                {analytics.overview.costPerKm > 0
+                  ? formatCurrency(analytics.overview.costPerKm)
+                  : "-"}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+              <p className="text-sm text-slate-400">Rotas finalizadas</p>
+              <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
+                {percentFormatter.format(analytics.overview.completionRate)}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+              <p className="text-sm text-slate-400">Veículos ativos</p>
+              <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
+                {analytics.overview.activeVehicles}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+              <p className="text-sm text-slate-400">Responsáveis com atividade</p>
+              <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
+                {analytics.overview.responsiblesCount}
+              </p>
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card className={reportPanelClass}>
+          <div className="mb-5 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-[0.22em] text-slate-500">
+                Ranking por veículo
+              </p>
+              <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+                Top veículos do fechamento
+              </h2>
+            </div>
+            <Car className="h-5 w-5 text-amber-300" />
+          </div>
+
+          {topVehicles.length === 0 ? (
+            <EmptyPanel text="Nenhum veículo com atividade no fechamento selecionado." />
           ) : (
-            <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-              {maintenances.map((m) => (
-                <div
-                  key={m.id}
-                  className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 bg-neutral-950/60 px-3 py-2"
-                >
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-gray-100 truncate">
-                      {m.vehiclePlate}
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      {m.date
-                        ? new Date(m.date).toLocaleString("pt-BR")
-                        : "-"}
-                    </p>
-                    {m.type && (
-                      <p className="text-xs text-gray-500 truncate">
-                        {m.type}
-                      </p>
-                    )}
-                  </div>
-                  <div className="text-right text-xs">
-                    <p className="font-semibold text-yellow-300">
-                      R$ {m.cost.toFixed(2)}
-                    </p>
-                    <p className="text-gray-400 capitalize">
-                      {m.status === "concluida"
-                        ? "Concluída"
-                        : "Em andamento"}
-                    </p>
-                  </div>
-                </div>
-              ))}
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className={reportTableHeadClass}>
+                  <tr>
+                    <th className="py-3 pr-4">Veículo</th>
+                    <th className="py-3 px-4">Km</th>
+                    <th className="py-3 px-4">Combustível</th>
+                    <th className="py-3 px-4">Manutenção</th>
+                    <th className="py-3 px-4">Custo total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topVehicles.slice(0, 12).map((vehicle) => (
+                    <tr key={vehicle.key} className={reportTableRowClass}>
+                      <td className="py-3 pr-4 font-medium text-slate-950 dark:text-white">
+                        {vehicle.vehicleLabel}
+                      </td>
+                      <td className="py-3 px-4">{formatNumber(vehicle.km, " km")}</td>
+                      <td className="py-3 px-4">{formatCurrency(vehicle.fuelCost)}</td>
+                      <td className="py-3 px-4">
+                        {formatCurrency(vehicle.maintenanceCost)}
+                      </td>
+                      <td className="py-3 px-4 font-medium text-amber-300">
+                        {formatCurrency(vehicle.totalCost)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </Card>
+
+        <Card className={reportPanelClass}>
+          <div className="mb-5 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-[0.22em] text-slate-500">
+                Ranking por responsável
+              </p>
+              <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+                Responsáveis com maior custo
+              </h2>
+            </div>
+            <Users className="h-5 w-5 text-cyan-300" />
+          </div>
+
+          {topResponsibles.length === 0 ? (
+            <EmptyPanel text="Nenhum responsável com atividade no fechamento." />
+          ) : (
+            <div className="h-72">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={analytics.responsibleCostChart} layout="vertical">
+                  <CartesianGrid stroke="rgba(148,163,184,0.12)" horizontal={false} />
+                  <XAxis
+                    type="number"
+                    tick={{ fill: "#94a3b8", fontSize: 11 }}
+                    axisLine={false}
+                    tickLine={false}
+                    tickFormatter={(value) => `R$ ${Number(value).toFixed(0)}`}
+                  />
+                  <YAxis
+                    type="category"
+                    dataKey="name"
+                    width={110}
+                    tick={{ fill: "#94a3b8", fontSize: 11 }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <Tooltip
+                    contentStyle={chartTooltipStyle}
+                    formatter={(value: number) => formatCurrency(value)}
+                  />
+                  <Bar dataKey="totalCost" fill="#38bdf8" radius={[0, 10, 10, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </Card>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-3">
+        <Card className={`${reportPanelClass} xl:col-span-2`}>
+          <div className="mb-5">
+            <p className="text-xs uppercase tracking-[0.22em] text-slate-500">
+              Rotas do fechamento
+            </p>
+            <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+              Histórico de rotas do mês consolidado
+            </h2>
+          </div>
+
+          {analytics.filteredRoutes.length === 0 ? (
+            <EmptyPanel text="Nenhuma rota registrada neste fechamento." />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className={reportTableHeadClass}>
+                  <tr>
+                    <th className="py-3 pr-4">Data</th>
+                    <th className="py-3 px-4">Veículo</th>
+                    <th className="py-3 px-4">Motorista</th>
+                    <th className="py-3 px-4">Km total</th>
+                    <th className="py-3 px-4">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {analytics.filteredRoutes.map((route) => (
+                    <tr key={route.id} className={reportTableRowClass}>
+                      <td className="py-3 pr-4 text-slate-600 dark:text-slate-300">
+                        {route.endAt || route.startAt
+                          ? new Date(route.endAt || route.startAt || "").toLocaleString(
+                              "pt-BR"
+                            )
+                          : "-"}
+                      </td>
+                      <td className="py-3 px-4 font-medium text-slate-950 dark:text-white">
+                        {route.vehiclePlate} · {route.vehicleModel}
+                      </td>
+                      <td className="py-3 px-4">{route.driverName || "-"}</td>
+                      <td className="py-3 px-4">
+                        {formatNumber(route.distanceKm ?? 0, " km")}
+                      </td>
+                      <td className="py-3 px-4 capitalize">{route.status}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+
+        <div className="space-y-4">
+          <Card className={reportPanelClass}>
+            <div className="mb-4">
+              <p className="text-xs uppercase tracking-[0.22em] text-slate-500">
+                Abastecimentos
+              </p>
+              <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+                Lançamentos do mês
+              </h2>
+            </div>
+
+            {analytics.filteredRefuels.length === 0 ? (
+              <EmptyPanel text="Nenhum abastecimento registrado neste fechamento." />
+            ) : (
+              <div className="space-y-2">
+                {analytics.filteredRefuels.slice(0, 8).map((refuel) => (
+                  <div
+                    key={refuel.id}
+                    className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-white/[0.03]"
+                  >
+                    <p className="font-medium text-slate-950 dark:text-white">{refuel.vehiclePlate}</p>
+                    <p className="text-xs text-slate-400">
+                      {refuel.date
+                        ? new Date(refuel.date).toLocaleString("pt-BR")
+                        : "-"}
+                    </p>
+                    <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                      {formatNumber(refuel.liters, " L")} ·{" "}
+                      {formatCurrency(refuel.totalCost)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          <Card className={reportPanelClass}>
+            <div className="mb-4">
+              <p className="text-xs uppercase tracking-[0.22em] text-slate-500">
+                Manutenções
+              </p>
+              <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+                Lançamentos do mês
+              </h2>
+            </div>
+
+            {analytics.filteredMaintenances.length === 0 ? (
+              <EmptyPanel text="Nenhuma manutenção registrada neste fechamento." />
+            ) : (
+              <div className="space-y-2">
+                {analytics.filteredMaintenances.slice(0, 8).map((maintenance) => (
+                  <div
+                    key={maintenance.id}
+                    className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-white/[0.03]"
+                  >
+                    <p className="font-medium text-slate-950 dark:text-white">
+                      {maintenance.vehiclePlate}
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      {maintenance.date
+                        ? new Date(maintenance.date).toLocaleString("pt-BR")
+                        : "-"}
+                    </p>
+                    <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                      {maintenance.type || "Manutenção"} ·{" "}
+                      {formatCurrency(maintenance.cost)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
       </div>
     </div>
   );
 }
+
+
+
+

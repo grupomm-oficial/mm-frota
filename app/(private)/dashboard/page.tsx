@@ -1,37 +1,52 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { db } from "@/lib/firebase";
+import { useRouter } from "next/navigation";
 import {
   collection,
   getDocs,
+  orderBy,
   query,
   where,
-  orderBy,
 } from "firebase/firestore";
-import { useAuth } from "@/context/AuthContext";
-import { useRouter } from "next/navigation";
-import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import {
-  Car,
-  Fuel,
-  Wrench,
-  Map as MapIcon,
-  Users,
   Activity,
+  AlertTriangle,
+  ArrowRight,
+  Car,
+  Clock3,
+  CircleDollarSign,
+  Fuel,
+  Gauge,
+  Map as MapIcon,
+  TrendingDown,
+  TrendingUp,
+  Wrench,
 } from "lucide-react";
 import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Pie,
+  PieChart,
   ResponsiveContainer,
-  LineChart,
-  Line,
+  Tooltip,
   XAxis,
   YAxis,
-  Tooltip,
-  CartesianGrid,
 } from "recharts";
 
-// ======== TIPAGENS ========
+import { MetricCard } from "@/components/layout/MetricCard";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { StatusBanner } from "@/components/layout/StatusBanner";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { useAuth } from "@/context/AuthContext";
+import { useTheme } from "@/context/ThemeContext";
+import { db } from "@/lib/firebase";
+import { cn } from "@/lib/utils";
 
 interface VehicleResponsibleUser {
   id: string;
@@ -46,12 +61,8 @@ interface Vehicle {
   storeId: string;
   status: "disponivel" | "em_rota" | "manutencao";
   currentKm?: number;
-
-  // campos antigos (pra manter compatibilidade)
   responsibleUserId?: string;
   responsibleUserName?: string;
-
-  // NOVOS CAMPOS: múltiplos responsáveis
   responsibleUserIds: string[];
   responsibleUsers: VehicleResponsibleUser[];
 }
@@ -65,6 +76,8 @@ interface RouteItem {
   destino?: string | null;
   startKm: number;
   startAt?: string | null;
+  endAt?: string | null;
+  distanceKm?: number | null;
   status: "em_andamento" | "finalizada";
 }
 
@@ -97,28 +110,185 @@ interface Driver {
   responsibleUserId: string;
 }
 
+interface ComparisonData {
+  current: number;
+  previous: number;
+  delta: number;
+  percent: number | null;
+}
+
+interface DashboardAlert {
+  id: string;
+  title: string;
+  description: string;
+  href: string;
+  actionLabel: string;
+  tone: "danger" | "warning" | "info";
+}
+
+const currencyFormatter = new Intl.NumberFormat("pt-BR", {
+  style: "currency",
+  currency: "BRL",
+});
+
+const numberFormatter = new Intl.NumberFormat("pt-BR", {
+  maximumFractionDigits: 1,
+});
+
+const compactFormatter = new Intl.NumberFormat("pt-BR", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
+function formatCurrency(value: number) {
+  return currencyFormatter.format(value || 0);
+}
+
+function formatNumber(value: number, suffix = "") {
+  return `${numberFormatter.format(value || 0)}${suffix}`;
+}
+
+function formatCompactNumber(value: number) {
+  return compactFormatter.format(value || 0);
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+
+  return date.toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatTime(value?: string | null) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+
+  return date.toLocaleTimeString("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function getComparisonData(current: number, previous: number): ComparisonData {
+  const delta = current - previous;
+  const percent = previous === 0 ? null : (delta / previous) * 100;
+
+  return {
+    current,
+    previous,
+    delta,
+    percent,
+  };
+}
+
+function getHoursSince(value?: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  return Math.max(0, Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60)));
+}
+
+function getDaysSince(value?: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  return Math.max(0, Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60 * 24)));
+}
+
+function TrendChip({
+  comparison,
+  higherIsBetter = true,
+  previousLabel,
+  emptyLabel = "Sem base anterior",
+}: {
+  comparison: ComparisonData;
+  higherIsBetter?: boolean;
+  previousLabel: string;
+  emptyLabel?: string;
+}) {
+  const direction =
+    comparison.delta === 0 ? "flat" : comparison.delta > 0 ? "up" : "down";
+  const positive =
+    direction === "flat"
+      ? null
+      : higherIsBetter
+        ? comparison.delta > 0
+        : comparison.delta < 0;
+
+  const toneClasses =
+    positive === null
+      ? "border-slate-200 bg-slate-50 text-slate-600 dark:border-white/10 dark:bg-slate-950/60 dark:text-slate-300"
+      : positive
+        ? "border-blue-200 bg-blue-50 text-blue-700 dark:border-yellow-400/20 dark:bg-yellow-400/10 dark:text-yellow-200"
+        : "border-red-200 bg-red-50 text-red-700 dark:border-red-400/20 dark:bg-red-500/10 dark:text-red-200";
+
+  const Icon =
+    direction === "up" ? TrendingUp : direction === "down" ? TrendingDown : Clock3;
+
+  return (
+    <div
+      className={cn(
+        "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium",
+        toneClasses
+      )}
+    >
+      <Icon className="h-3.5 w-3.5" />
+      {comparison.previous === 0
+        ? emptyLabel
+        : `${comparison.delta > 0 ? "+" : ""}${Math.round(comparison.percent || 0)}% vs ${previousLabel}`}
+    </div>
+  );
+}
+
+function StateBlock({
+  message,
+  tone = "neutral",
+}: {
+  message: string;
+  tone?: "neutral" | "info";
+}) {
+  return (
+    <div
+      className={
+        tone === "info"
+          ? "rounded-[22px] border border-blue-200 bg-blue-50/90 px-4 py-8 text-center text-sm text-blue-700 dark:border-yellow-400/20 dark:bg-yellow-400/10 dark:text-yellow-200"
+          : "rounded-[22px] border border-dashed border-slate-200 bg-slate-50/80 px-4 py-8 text-center text-sm text-slate-500 dark:border-white/10 dark:bg-slate-950/60 dark:text-slate-400"
+      }
+    >
+      {message}
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const { user } = useAuth();
+  const { theme } = useTheme();
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
-
+  const [costChartMode, setCostChartMode] = useState<"split" | "total">("split");
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [routes, setRoutes] = useState<RouteItem[]>([]);
   const [fuelings, setFuelings] = useState<Fueling[]>([]);
   const [maintenances, setMaintenances] = useState<Maintenance[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
-
   const [errorMsg, setErrorMsg] = useState("");
 
   const isAdmin = user?.role === "admin";
 
   useEffect(() => {
-    if (!user) {
-      router.replace("/login");
-      return;
-    }
-  }, [user, router]);
+    if (!user) router.replace("/login");
+  }, [router, user]);
 
   useEffect(() => {
     async function loadAll() {
@@ -128,13 +298,10 @@ export default function DashboardPage() {
         setLoading(true);
         setErrorMsg("");
 
-        // ===== Veículos =====
         let vehiclesSnap;
         if (isAdmin) {
-          // Admin vê todos
           vehiclesSnap = await getDocs(collection(db, "vehicles"));
         } else {
-          // Usuário comum vê veículos em que ele é um dos responsáveis
           vehiclesSnap = await getDocs(
             query(
               collection(db, "vehicles"),
@@ -143,57 +310,46 @@ export default function DashboardPage() {
           );
         }
 
-        const vList: Vehicle[] = vehiclesSnap.docs.map((d) => {
-          const data = d.data() as any;
-
-          // Compatibilidade: se já existir array de responsáveis, usa;
-          // senão, monta a partir de responsibleUserId / responsibleUserName
+        const vList: Vehicle[] = vehiclesSnap.docs.map((doc) => {
+          const data = doc.data() as any;
           const responsibleUsersFromDoc: VehicleResponsibleUser[] =
             Array.isArray(data.responsibleUsers) && data.responsibleUsers.length
               ? data.responsibleUsers
               : data.responsibleUserId && data.responsibleUserName
-              ? [
-                  {
-                    id: data.responsibleUserId,
-                    name: data.responsibleUserName,
-                    storeId: data.storeId,
-                  },
-                ]
-              : [];
+                ? [
+                    {
+                      id: data.responsibleUserId,
+                      name: data.responsibleUserName,
+                      storeId: data.storeId,
+                    },
+                  ]
+                : [];
 
-          const responsibleUserIdsFromDoc: string[] =
-            Array.isArray(data.responsibleUserIds) &&
-            data.responsibleUserIds.length
+          const responsibleUserIdsFromDoc =
+            Array.isArray(data.responsibleUserIds) && data.responsibleUserIds.length
               ? data.responsibleUserIds
-              : responsibleUsersFromDoc.map((u) => u.id);
-
-          const primaryName =
-            data.responsibleUserName ||
-            (responsibleUsersFromDoc[0]?.name ?? "");
+              : responsibleUsersFromDoc.map((responsibleUser) => responsibleUser.id);
 
           return {
-            id: d.id,
+            id: doc.id,
             plate: data.plate,
             model: data.model,
             storeId: data.storeId,
             status: data.status ?? "disponivel",
             currentKm: data.currentKm,
-            // antigos
             responsibleUserId: data.responsibleUserId,
-            responsibleUserName: primaryName,
-            // novos
+            responsibleUserName:
+              data.responsibleUserName || responsibleUsersFromDoc[0]?.name || "",
             responsibleUserIds: responsibleUserIdsFromDoc,
             responsibleUsers: responsibleUsersFromDoc,
           };
         });
         setVehicles(vList);
 
-        // ===== Rotas =====
         let routesSnap;
         if (isAdmin) {
           routesSnap = await getDocs(collection(db, "routes"));
         } else {
-          // Usuário vê rotas dos veículos em que ele é um dos responsáveis
           routesSnap = await getDocs(
             query(
               collection(db, "routes"),
@@ -202,30 +358,31 @@ export default function DashboardPage() {
           );
         }
 
-        const rList: RouteItem[] = routesSnap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            vehiclePlate: data.vehiclePlate,
-            vehicleModel: data.vehicleModel,
-            driverName: data.driverName,
-            origem: data.origem ?? null,
-            destino: data.destino ?? null,
-            startKm: data.startKm,
-            startAt: data.startAt ?? null,
-            status: data.status ?? "em_andamento",
-          };
-        });
-        setRoutes(rList);
+        setRoutes(
+          routesSnap.docs.map((doc) => {
+            const data = doc.data() as any;
+            return {
+              id: doc.id,
+              vehiclePlate: data.vehiclePlate,
+              vehicleModel: data.vehicleModel,
+              driverName: data.driverName,
+              origem: data.origem ?? null,
+              destino: data.destino ?? null,
+              startKm: Number(data.startKm || 0),
+              startAt: data.startAt ?? null,
+              endAt: data.endAt ?? null,
+              distanceKm: data.distanceKm ?? null,
+              status: data.status ?? "em_andamento",
+            };
+          })
+        );
 
-        // ===== Abastecimentos =====
         let fuelingsSnap;
         if (isAdmin) {
           fuelingsSnap = await getDocs(
             query(collection(db, "fuelings"), orderBy("date", "desc"))
           );
         } else {
-          // Usuário vê abastecimentos dos veículos em que ele é um dos responsáveis
           fuelingsSnap = await getDocs(
             query(
               collection(db, "fuelings"),
@@ -234,10 +391,10 @@ export default function DashboardPage() {
           );
         }
 
-        let fList: Fueling[] = fuelingsSnap.docs.map((d) => {
-          const data = d.data() as any;
+        let fList: Fueling[] = fuelingsSnap.docs.map((doc) => {
+          const data = doc.data() as any;
           return {
-            id: d.id,
+            id: doc.id,
             vehiclePlate: data.vehiclePlate,
             vehicleModel: data.vehicleModel,
             storeId: data.storeId,
@@ -249,20 +406,16 @@ export default function DashboardPage() {
         });
 
         if (!isAdmin) {
-          fList = fList.sort((a, b) =>
-            (b.date || "").localeCompare(a.date || "")
-          );
+          fList = fList.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
         }
         setFuelings(fList);
 
-        // ===== Manutenções =====
         let maintSnap;
         if (isAdmin) {
           maintSnap = await getDocs(
             query(collection(db, "maintenances"), orderBy("date", "desc"))
           );
         } else {
-          // Usuário vê manutenções dos veículos em que ele é um dos responsáveis
           maintSnap = await getDocs(
             query(
               collection(db, "maintenances"),
@@ -271,10 +424,10 @@ export default function DashboardPage() {
           );
         }
 
-        let mList: Maintenance[] = maintSnap.docs.map((d) => {
-          const data = d.data() as any;
+        let mList: Maintenance[] = maintSnap.docs.map((doc) => {
+          const data = doc.data() as any;
           return {
-            id: d.id,
+            id: doc.id,
             vehiclePlate: data.vehiclePlate,
             vehicleModel: data.vehicleModel,
             storeId: data.storeId,
@@ -286,13 +439,10 @@ export default function DashboardPage() {
         });
 
         if (!isAdmin) {
-          mList = mList.sort((a, b) =>
-            (b.date || "").localeCompare(a.date || "")
-          );
+          mList = mList.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
         }
         setMaintenances(mList);
 
-        // ===== Motoristas =====
         let driversSnap;
         if (isAdmin) {
           driversSnap = await getDocs(collection(db, "drivers"));
@@ -305,16 +455,17 @@ export default function DashboardPage() {
           );
         }
 
-        const dList: Driver[] = driversSnap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            name: data.name,
-            storeId: data.storeId,
-            responsibleUserId: data.responsibleUserId,
-          };
-        });
-        setDrivers(dList);
+        setDrivers(
+          driversSnap.docs.map((doc) => {
+            const data = doc.data() as any;
+            return {
+              id: doc.id,
+              name: data.name,
+              storeId: data.storeId,
+              responsibleUserId: data.responsibleUserId,
+            };
+          })
+        );
       } catch (error) {
         console.error("Erro ao carregar dashboard:", error);
         setErrorMsg("Erro ao carregar dados do dashboard.");
@@ -324,99 +475,152 @@ export default function DashboardPage() {
     }
 
     loadAll();
-  }, [user, isAdmin]);
+  }, [isAdmin, user]);
 
-  if (!user) return null;
-
-  // ===== Helpers de mês atual =====
-  function isInCurrentMonth(dateStr?: string | null) {
+  function isInRelativeMonth(dateStr: string | null | undefined, offset = 0) {
     if (!dateStr) return false;
-    const d = new Date(dateStr);
-    if (Number.isNaN(d.getTime())) return false;
-
+    const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) return false;
     const now = new Date();
+    const reference = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+
     return (
-      d.getFullYear() === now.getFullYear() &&
-      d.getMonth() === now.getMonth()
+      date.getFullYear() === reference.getFullYear() &&
+      date.getMonth() === reference.getMonth()
     );
   }
 
-  // ===== Métricas gerais =====
+  function isInCurrentMonth(dateStr?: string | null) {
+    return isInRelativeMonth(dateStr, 0);
+  }
 
   const totalVeiculos = vehicles.length;
-  const veiculosEmRota = vehicles.filter((v) => v.status === "em_rota").length;
+  const veiculosEmRota = vehicles.filter((vehicle) => vehicle.status === "em_rota").length;
   const veiculosEmManutencao = vehicles.filter(
-    (v) => v.status === "manutencao"
+    (vehicle) => vehicle.status === "manutencao"
   ).length;
   const veiculosDisponiveis = vehicles.filter(
-    (v) => v.status === "disponivel"
+    (vehicle) => vehicle.status === "disponivel"
   ).length;
-
   const rotasEmAndamento = routes
-    .filter((r) => r.status === "em_andamento")
+    .filter((route) => route.status === "em_andamento")
     .sort((a, b) => (b.startAt || "").localeCompare(a.startAt || ""));
-
   const ultimasRotasEmAndamento = rotasEmAndamento.slice(0, 5);
 
-  // Filtra abastecimentos do mês atual
   const fuelingsMes = useMemo(
-    () => fuelings.filter((f) => isInCurrentMonth(f.date)),
+    () => fuelings.filter((fueling) => isInCurrentMonth(fueling.date)),
     [fuelings]
   );
-
+  const fuelingsMesAnterior = useMemo(
+    () => fuelings.filter((fueling) => isInRelativeMonth(fueling.date, -1)),
+    [fuelings]
+  );
   const ultimosAbastecimentos = useMemo(
     () => fuelingsMes.slice(0, 5),
     [fuelingsMes]
   );
-
-  // Manutenções: mês atual e em andamento
   const maintMes = useMemo(
-    () => maintenances.filter((m) => isInCurrentMonth(m.date)),
+    () => maintenances.filter((maintenance) => isInCurrentMonth(maintenance.date)),
     [maintenances]
   );
-
-  const manutencoesEmAndamento = maintenances
-    .filter((m) => m.status === "em_andamento")
-    .slice(0, 5);
-
-  const qtdManutencoesEmAndamento = useMemo(
-    () => maintenances.filter((m) => m.status === "em_andamento").length,
+  const maintMesAnterior = useMemo(
+    () =>
+      maintenances.filter((maintenance) =>
+        isInRelativeMonth(maintenance.date, -1)
+      ),
     [maintenances]
   );
+  const manutencoesEmAndamento = useMemo(
+    () => maintenances.filter((maintenance) => maintenance.status === "em_andamento"),
+    [maintenances]
+  );
+  const finalizadasMes = useMemo(
+    () =>
+      routes.filter(
+        (route) =>
+          route.status === "finalizada" && isInCurrentMonth(route.endAt)
+      ),
+    [routes]
+  );
+  const finalizadasMesAnterior = useMemo(
+    () =>
+      routes.filter(
+        (route) =>
+          route.status === "finalizada" && isInRelativeMonth(route.endAt, -1)
+      ),
+    [routes]
+  );
+  const totalCombustivelMes = useMemo(
+    () => fuelingsMes.reduce((sum, fueling) => sum + Number(fueling.total || 0), 0),
+    [fuelingsMes]
+  );
+  const totalCombustivelMesAnterior = useMemo(
+    () =>
+      fuelingsMesAnterior.reduce(
+        (sum, fueling) => sum + Number(fueling.total || 0),
+        0
+      ),
+    [fuelingsMesAnterior]
+  );
+  const totalManutencaoMes = useMemo(
+    () => maintMes.reduce((sum, maintenance) => sum + Number(maintenance.cost || 0), 0),
+    [maintMes]
+  );
+  const totalManutencaoMesAnterior = useMemo(
+    () =>
+      maintMesAnterior.reduce(
+        (sum, maintenance) => sum + Number(maintenance.cost || 0),
+        0
+      ),
+    [maintMesAnterior]
+  );
+  const totalCustoMes = totalCombustivelMes + totalManutencaoMes;
+  const totalCustoMesAnterior =
+    totalCombustivelMesAnterior + totalManutencaoMesAnterior;
+  const totalKmMes = useMemo(
+    () =>
+      finalizadasMes.reduce(
+        (sum, route) => sum + Number(route.distanceKm || 0),
+        0
+      ),
+    [finalizadasMes]
+  );
+  const totalKmMesAnterior = useMemo(
+    () =>
+      finalizadasMesAnterior.reduce(
+        (sum, route) => sum + Number(route.distanceKm || 0),
+        0
+      ),
+    [finalizadasMesAnterior]
+  );
+  const qtdManutencoesEmAndamento = manutencoesEmAndamento.length;
+  const disponibilidadePercentual =
+    totalVeiculos === 0 ? 0 : (veiculosDisponiveis / totalVeiculos) * 100;
+  const custoPorKmMes = totalKmMes > 0 ? totalCustoMes / totalKmMes : 0;
+  const custoPorKmMesAnterior =
+    totalKmMesAnterior > 0 ? totalCustoMesAnterior / totalKmMesAnterior : 0;
 
-  // ===== Gasto mensal com combustível e manutenção (para ADMIN) =====
   const monthlyTotals = useMemo(() => {
     if (fuelings.length === 0 && maintenances.length === 0) return [];
-
     const map = new Map<string, { fuel: number; maint: number }>();
 
-    // Abastecimentos
-    fuelings.forEach((f) => {
-      if (!f.date) return;
-      const d = new Date(f.date);
-      if (Number.isNaN(d.getTime())) return;
-
-      const year = d.getFullYear();
-      const month = d.getMonth() + 1;
-      const key = `${year}-${String(month).padStart(2, "0")}`;
-
+    fuelings.forEach((fueling) => {
+      if (!fueling.date) return;
+      const date = new Date(fueling.date);
+      if (Number.isNaN(date.getTime())) return;
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
       const current = map.get(key) ?? { fuel: 0, maint: 0 };
-      current.fuel += Number(f.total || 0);
+      current.fuel += Number(fueling.total || 0);
       map.set(key, current);
     });
 
-    // Manutenções
-    maintenances.forEach((m) => {
-      if (!m.date) return;
-      const d = new Date(m.date);
-      if (Number.isNaN(d.getTime())) return;
-
-      const year = d.getFullYear();
-      const month = d.getMonth() + 1;
-      const key = `${year}-${String(month).padStart(2, "0")}`;
-
+    maintenances.forEach((maintenance) => {
+      if (!maintenance.date) return;
+      const date = new Date(maintenance.date);
+      if (Number.isNaN(date.getTime())) return;
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
       const current = map.get(key) ?? { fuel: 0, maint: 0 };
-      current.maint += Number(m.cost || 0);
+      current.maint += Number(maintenance.cost || 0);
       map.set(key, current);
     });
 
@@ -424,806 +628,1149 @@ export default function DashboardPage() {
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([key, value]) => {
         const [year, month] = key.split("-");
-        const label = `${month}/${year.slice(2)}`; // ex: 03/25
         return {
-          monthKey: key,
-          label,
+          label: `${month}/${year.slice(2)}`,
           fuelTotal: value.fuel,
           maintTotal: value.maint,
         };
       });
   }, [fuelings, maintenances]);
 
-  const lastMonthTotals = useMemo(() => {
-    if (monthlyTotals.length === 0) return null;
-    const last = monthlyTotals[monthlyTotals.length - 1];
-    return {
-      label: last.label,
-      fuel: last.fuelTotal,
-      maint: last.maintTotal,
-    };
-  }, [monthlyTotals]);
+  const lastMonthTotals =
+    monthlyTotals.length > 0 ? monthlyTotals[monthlyTotals.length - 1] : null;
+  const monthlySeries = monthlyTotals.map((item) => ({
+    ...item,
+    totalCost: item.fuelTotal + item.maintTotal,
+  }));
+  const fleetStatusData = [
+    { name: "Disponiveis", value: veiculosDisponiveis, color: "#facc15" },
+    { name: "Em rota", value: veiculosEmRota, color: "#3b82f6" },
+    { name: "Manutencao", value: veiculosEmManutencao, color: "#334155" },
+  ].filter((item) => item.value > 0);
+  const operationalData = [
+    { label: "Rotas finais", value: finalizadasMes.length, fill: "#3b82f6" },
+    { label: "Abastec.", value: fuelingsMes.length, fill: "#facc15" },
+    { label: "Manut.", value: maintMes.length, fill: "#94a3b8" },
+  ];
+
+  const chartColors =
+    theme === "dark"
+      ? {
+          axis: "#94a3b8",
+          grid: "rgba(148, 163, 184, 0.18)",
+          tooltipBg: "#111827",
+          tooltipBorder: "rgba(148, 163, 184, 0.24)",
+          text: "#e2e8f0",
+          fuel: "#facc15",
+          maint: "#3b82f6",
+          total: "#3b82f6",
+        }
+      : {
+          axis: "#64748b",
+          grid: "rgba(148, 163, 184, 0.22)",
+          tooltipBg: "#ffffff",
+          tooltipBorder: "rgba(148, 163, 184, 0.28)",
+          text: "#0f172a",
+          fuel: "#d97706",
+          maint: "#2563eb",
+          total: "#2563eb",
+        };
+
+  const chartTooltipStyle = {
+    backgroundColor: chartColors.tooltipBg,
+    border: `1px solid ${chartColors.tooltipBorder}`,
+    borderRadius: 18,
+    color: chartColors.text,
+  };
+
+  const currentPeriodLabel = new Intl.DateTimeFormat("pt-BR", {
+    month: "long",
+    year: "numeric",
+  }).format(new Date());
+  const previousPeriodLabel = new Intl.DateTimeFormat("pt-BR", {
+    month: "long",
+    year: "numeric",
+  }).format(new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1));
+
+  const custoComparativo = getComparisonData(totalCustoMes, totalCustoMesAnterior);
+  const rotasComparativo = getComparisonData(
+    finalizadasMes.length,
+    finalizadasMesAnterior.length
+  );
+  const abastecimentosComparativo = getComparisonData(
+    fuelingsMes.length,
+    fuelingsMesAnterior.length
+  );
+  const manutencoesComparativo = getComparisonData(
+    maintMes.length,
+    maintMesAnterior.length
+  );
+  const custoPorKmComparativo = getComparisonData(
+    custoPorKmMes,
+    custoPorKmMesAnterior
+  );
+
+  const rotasLongasEmAndamento = useMemo(
+    () =>
+      rotasEmAndamento
+        .map((route) => ({
+          ...route,
+          openHours: getHoursSince(route.startAt) ?? 0,
+        }))
+        .filter((route) => route.openHours >= 8)
+        .sort((a, b) => b.openHours - a.openHours),
+    [rotasEmAndamento]
+  );
+
+  const manutencoesAtrasadas = useMemo(
+    () =>
+      manutencoesEmAndamento
+        .map((maintenance) => ({
+          ...maintenance,
+          openDays: getDaysSince(maintenance.date) ?? 0,
+        }))
+        .filter((maintenance) => maintenance.openDays >= 5)
+        .sort((a, b) => b.openDays - a.openDays),
+    [manutencoesEmAndamento]
+  );
+
+  const dashboardAlerts = useMemo<DashboardAlert[]>(() => {
+    const alerts: DashboardAlert[] = [];
+
+    if (rotasLongasEmAndamento.length > 0) {
+      alerts.push({
+        id: "rotas-longas",
+        title: "Rotas abertas por tempo elevado",
+        description: `${rotasLongasEmAndamento.length} rota(s) estao em andamento ha mais de 8 horas.`,
+        href: "/rotas",
+        actionLabel: "Abrir rotas",
+        tone: "warning",
+      });
+    }
+
+    if (manutencoesAtrasadas.length > 0) {
+      alerts.push({
+        id: "manutencoes-atrasadas",
+        title: "Manutencoes sem retorno",
+        description: `${manutencoesAtrasadas.length} manutencao(oes) seguem abertas ha mais de 5 dias.`,
+        href: "/manutencoes",
+        actionLabel: "Ver manutencoes",
+        tone: "danger",
+      });
+    }
+
+    if (custoComparativo.previous > 0 && custoComparativo.percent !== null && custoComparativo.percent >= 15) {
+      alerts.push({
+        id: "custo-acima-da-base",
+        title: "Custo acima do padrao recente",
+        description: `O custo do mes subiu ${Math.round(custoComparativo.percent)}% em relacao a ${previousPeriodLabel}.`,
+        href: isAdmin ? "/relatorios" : "/abastecimentos",
+        actionLabel: isAdmin ? "Analisar relatorio" : "Ver custos",
+        tone: "warning",
+      });
+    }
+
+    if (isAdmin && totalVeiculos > 0 && disponibilidadePercentual < 45) {
+      alerts.push({
+        id: "baixa-disponibilidade",
+        title: "Disponibilidade da frota abaixo do ideal",
+        description: `Apenas ${Math.round(disponibilidadePercentual)}% da frota esta disponivel agora.`,
+        href: "/veiculos",
+        actionLabel: "Revisar frota",
+        tone: "info",
+      });
+    }
+
+    if (!isAdmin && veiculosDisponiveis === 0 && vehicles.length > 0) {
+      alerts.push({
+        id: "sem-veiculo-disponivel",
+        title: "Nenhum veiculo disponivel no momento",
+        description: "Todos os veiculos vinculados a voce estao em rota ou manutencao.",
+        href: "/veiculos",
+        actionLabel: "Abrir veiculos",
+        tone: "info",
+      });
+    }
+
+    return alerts.slice(0, 4);
+  }, [
+    custoComparativo.percent,
+    custoComparativo.previous,
+    disponibilidadePercentual,
+    isAdmin,
+    manutencoesAtrasadas.length,
+    previousPeriodLabel,
+    rotasLongasEmAndamento.length,
+    totalVeiculos,
+    veiculosDisponiveis,
+    vehicles.length,
+  ]);
+  const pendenciasAtivas = rotasLongasEmAndamento.length + manutencoesEmAndamento.length;
+  const isDarkTheme = theme === "dark";
+  const dashboardHeaderClass = isDarkTheme
+    ? "border-yellow-400/10 bg-[linear-gradient(145deg,rgba(8,8,10,0.98),rgba(15,15,17,0.96))]"
+    : "border-blue-200/80 bg-[linear-gradient(145deg,rgba(239,246,255,0.96),rgba(255,255,255,0.99))] shadow-[0_24px_56px_rgba(37,99,235,0.12)]";
+  const dashboardSectionClass = cn(
+    "app-panel gap-0 overflow-hidden py-0",
+    isDarkTheme
+      ? "border-yellow-400/10"
+      : "border-blue-200/80 bg-[linear-gradient(180deg,rgba(239,246,255,0.95),rgba(255,255,255,0.99))] shadow-[0_20px_48px_rgba(37,99,235,0.11)]"
+  );
+  const dashboardMetricClass = isDarkTheme
+    ? "border-yellow-400/10 bg-[linear-gradient(180deg,rgba(10,10,12,0.95),rgba(15,15,17,0.96))]"
+    : "border-blue-200/80 bg-[linear-gradient(180deg,rgba(239,246,255,0.98),rgba(255,255,255,0.98))] shadow-[0_18px_40px_rgba(37,99,235,0.1)]";
+  const sectionEyebrowClass =
+    "text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-700 dark:text-yellow-200";
+  const sectionNeutralEyebrowClass =
+    "text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-700 dark:text-slate-200";
+  const sectionMetaCardClass =
+    "rounded-[20px] border border-blue-100 bg-blue-50/80 px-4 py-3 dark:border-yellow-400/10 dark:bg-[linear-gradient(180deg,rgba(12,12,14,0.94),rgba(18,18,20,0.98))]";
+  const sectionMetaLabelClass =
+    "text-[11px] uppercase tracking-[0.16em] text-blue-700/70 dark:text-slate-400";
+  const detailCardClass =
+    "rounded-[22px] border border-blue-100/80 bg-[linear-gradient(180deg,rgba(239,246,255,0.78),rgba(255,255,255,0.98))] p-4 dark:border-yellow-400/10 dark:bg-[linear-gradient(180deg,rgba(12,12,14,0.94),rgba(18,18,20,0.98))]";
+  const detailStatClass =
+    "rounded-[18px] border border-blue-100 bg-white px-3 py-2 dark:border-white/10 dark:bg-slate-950/50";
+  const detailAccentStatClass =
+    "rounded-[18px] border border-blue-200 bg-blue-50 px-3 py-2 dark:border-yellow-400/20 dark:bg-yellow-400/10";
+  const detailAccentLabelClass =
+    "text-[11px] uppercase tracking-[0.16em] text-blue-700 dark:text-yellow-200";
+  const softPillClass =
+    "rounded-full border border-blue-100 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 dark:border-white/10 dark:bg-slate-950/40 dark:text-slate-200";
+  const accentPillClass =
+    "rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 dark:border-yellow-400/20 dark:bg-yellow-400/10 dark:text-yellow-200";
+  const actionOutlineClass = isDarkTheme
+    ? "border-yellow-300/40 hover:border-yellow-300/70 hover:bg-yellow-400/10 hover:text-white"
+    : "border-blue-200 bg-white text-blue-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-800";
+  const alertActionClass = isDarkTheme
+    ? "text-yellow-200 hover:bg-yellow-400/10 hover:text-yellow-100"
+    : "text-blue-700 hover:bg-blue-50 hover:text-blue-800";
+
+  if (!user) return null;
 
   return (
-    <div className="space-y-6">
-      {/* ====================== MODO ADMIN ====================== */}
-      {isAdmin ? (
-        <>
-          {/* Painel frontal ADMIN */}
-          <Card className="relative overflow-hidden border border-neutral-800 bg-gradient-to-r from-neutral-950 via-neutral-900 to-neutral-950">
-            <div className="absolute inset-y-0 right-0 w-40 bg-yellow-500/5 blur-3xl pointer-events-none" />
-            <div className="relative p-5 md:p-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-              <div className="space-y-2">
-                <p className="text-xs uppercase tracking-[0.16em] text-yellow-400/80">
-                  Painel geral · MM Frota
-                </p>
-                <h1 className="text-2xl md:text-3xl font-bold text-white">
-                  Visão em tempo real da frota do Grupo MM
-                </h1>
-                <p className="text-sm text-gray-300 max-w-2xl">
-                  Acompanhe veículos em rota, manutenções em andamento e o
-                  histórico financeiro da frota. Valores de combustível e
-                  manutenções podem ser analisados mês a mês na linha do tempo.
-                </p>
+    <div className="app-page">
+      <PageHeader
+        eyebrow={isAdmin ? "Painel executivo" : "Painel de operacao"}
+        title={
+          isAdmin
+            ? "Dashboard da frota Grupo MM"
+            : `Operacao da sua frota, ${user.name}`
+        }
+        description={
+          isAdmin
+            ? "Acompanhe custos, status da frota e operacao em um painel mais limpo, com foco no que precisa de decisao rapida."
+            : "Veja somente os dados essenciais da sua operacao: rotas ativas, custos do mes, abastecimentos e manutencoes que precisam de acompanhamento."
+        }
+        icon={isAdmin ? Gauge : Activity}
+        iconTone="yellow"
+        className={dashboardHeaderClass}
+        badges={
+          <>
+            <span className={cn("inline-flex items-center gap-2", accentPillClass)}>
+              <span
+                className={`h-2 w-2 rounded-full ${loading ? "animate-pulse bg-current" : "bg-current"}`}
+              />
+              {loading ? "Atualizando painel" : "Painel sincronizado"}
+            </span>
+            <span className={cn("inline-flex items-center", softPillClass)}>
+              Mes atual - {currentPeriodLabel}
+            </span>
+            {lastMonthTotals ? (
+              <span className={cn("inline-flex items-center", accentPillClass)}>
+                Ultimo fechamento - {lastMonthTotals.label}
+              </span>
+            ) : null}
+          </>
+        }
+        actions={
+          isAdmin ? (
+            <>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => router.push("/relatorios")}
+              >
+                Abrir relatorios
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className={actionOutlineClass}
+                onClick={() => router.push("/veiculos")}
+              >
+                Ver veiculos
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => router.push("/rotas")}
+              >
+                Nova rota
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className={actionOutlineClass}
+                onClick={() => router.push("/abastecimentos")}
+              >
+                Abastecer
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="bg-slate-900 text-white hover:bg-slate-800 dark:border dark:border-yellow-400/10 dark:bg-slate-950/70 dark:text-white dark:hover:bg-slate-900"
+                onClick={() => router.push("/manutencoes")}
+              >
+                Manutencao
+              </Button>
+            </>
+          )
+        }
+      />
 
-                <div className="flex flex-wrap gap-2 pt-1">
-                  <span className="inline-flex items-center gap-1 rounded-full bg-neutral-950/80 border border-neutral-700 px-3 py-1 text-[11px] text-gray-300">
-                    <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                    {veiculosEmRota} veículo(s) em rota
-                  </span>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-neutral-950/80 border border-neutral-700 px-3 py-1 text-[11px] text-gray-300">
-                    <span className="w-2 h-2 rounded-full bg-yellow-400" />
-                    {veiculosEmManutencao} em manutenção
-                  </span>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-neutral-950/80 border border-neutral-700 px-3 py-1 text-[11px] text-gray-300">
-                    <span className="w-2 h-2 rounded-full bg-sky-400" />
-                    {fuelingsMes.length} abastecimento(s) neste mês
-                  </span>
-                </div>
-              </div>
+      {loading ? (
+        <StatusBanner
+          tone="info"
+          className="border-blue-200 bg-blue-50 text-blue-700 dark:border-yellow-400/20 dark:bg-yellow-400/10 dark:text-yellow-200"
+        >
+          <span className="inline-flex items-center gap-2">
+            <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-current" />
+            Buscando os dados mais recentes da frota e montando os indicadores.
+          </span>
+        </StatusBanner>
+      ) : null}
 
-              <div className="flex flex-col items-start md:items-end gap-2">
-                <div className="flex flex-col gap-1">
-                  <p className="text-xs text-gray-400">
-                    Usuário:{" "}
-                    <span className="font-semibold text-gray-100">
-                      {user?.name}
-                    </span>{" "}
-                    <span className="ml-2 rounded-full bg-yellow-500/10 border border-yellow-500/40 px-2 py-[2px] text-[10px] font-semibold text-yellow-300">
-                      ADMIN
-                    </span>
-                  </p>
-                  <p className="text-[11px] text-gray-500">
-                    Use o menu lateral para navegar ou os atalhos abaixo para
-                    relatórios e veículos.
-                  </p>
-                </div>
+      {errorMsg ? <StatusBanner tone="error">{errorMsg}</StatusBanner> : null}
 
-                <div className="flex flex-wrap gap-2 pt-1">
-                  <Button
-                    size="sm"
-                    className="bg-yellow-500 hover:bg-yellow-400 text-black text-xs font-semibold"
-                    onClick={() => router.push("/relatorios")}
-                  >
-                    Ver relatórios completos
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="border-neutral-700 text-gray-200 hover:bg-neutral-800 text-xs font-semibold"
-                    onClick={() => router.push("/veiculos")}
-                  >
-                    Abrir lista de veículos
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </Card>
-
-          {errorMsg && (
-            <p className="text-sm text-red-400 font-medium">{errorMsg}</p>
-          )}
-
-          {/* Cards principais ADMIN */}
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-            <Card className="p-4 bg-neutral-950 border border-neutral-800 flex items-center justify-between">
-              <div>
-                <p className="text-xs text-gray-400 uppercase tracking-wide">
-                  Veículos cadastrados
-                </p>
-                <p className="text-2xl font-bold text-yellow-400">
-                  {totalVeiculos}
-                </p>
-                <p className="text-xs text-gray-400 mt-1">
-                  {veiculosDisponiveis} disponíveis para uso
-                </p>
-              </div>
-              <div className="p-3 rounded-2xl bg-yellow-500/10">
-                <Car className="w-6 h-6 text-yellow-400" />
-              </div>
-            </Card>
-
-            <Card className="p-4 bg-neutral-950 border border-neutral-800 flex items-center justify-between">
-              <div>
-                <p className="text-xs text-gray-400 uppercase tracking-wide">
-                  Rotas em andamento
-                </p>
-                <p className="text-2xl font-bold text-yellow-400">
-                  {rotasEmAndamento.length}
-                </p>
-                <p className="text-xs text-gray-400 mt-1">
-                  {veiculosEmRota} veículo(s) atualmente em rota
-                </p>
-              </div>
-              <div className="p-3 rounded-2xl bg-yellow-500/10">
-                <MapIcon className="w-6 h-6 text-yellow-400" />
-              </div>
-            </Card>
-
-            <Card className="p-4 bg-neutral-950 border border-neutral-800 flex items-center justify-between">
-              <div>
-                <p className="text-xs text-gray-400 uppercase tracking-wide">
-                  Manutenções
-                </p>
-                <p className="text-2xl font-bold text-yellow-400">
-                  {veiculosEmManutencao}
-                </p>
-                <p className="text-xs text-gray-400 mt-1">
-                  {qtdManutencoesEmAndamento} manutenção(ões) em andamento
-                </p>
-              </div>
-              <div className="p-3 rounded-2xl bg-yellow-500/10">
-                <Wrench className="w-6 h-6 text-yellow-400" />
-              </div>
-            </Card>
-
-            <Card className="p-4 bg-neutral-950 border border-neutral-800 flex items-center justify-between">
-              <div>
-                <p className="text-xs text-gray-400 uppercase tracking-wide">
-                  Abastecimentos · mês atual
-                </p>
-                <p className="text-2xl font-bold text-yellow-400">
-                  {fuelingsMes.length}
-                </p>
-                <p className="text-xs text-gray-400 mt-1">
-                  Registros de abastecimento neste mês
-                </p>
-              </div>
-              <div className="p-3 rounded-2xl bg-yellow-500/10">
-                <Fuel className="w-6 h-6 text-yellow-400" />
-              </div>
-            </Card>
+      <Card className={dashboardSectionClass}>
+        <div className="flex flex-col gap-3 border-b border-border px-5 py-5 md:flex-row md:items-start md:justify-between">
+          <div className="space-y-1">
+            <p className={sectionEyebrowClass}>
+              Alertas do dia
+            </p>
+            <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+              O que precisa de atencao agora
+            </h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Sinais de custo, operacao e disponibilidade que merecem acompanhamento.
+            </p>
           </div>
 
-          {/* Resumo do responsável */}
-          <Card className="p-4 bg-neutral-950 border border-neutral-800 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="p-3 rounded-2xl bg-yellow-500/10">
-                <Users className="w-6 h-6 text-yellow-400" />
-              </div>
-              <div>
-                <p className="text-xs text-gray-400 uppercase tracking-wide">
-                  Resumo do usuário
-                </p>
-                <p className="text-sm text-gray-200">
-                  Você está logado como{" "}
-                  <span className="font-semibold text-yellow-400">ADMIN</span>{" "}
-                  e tem acesso à frota completa do Grupo MM.
-                </p>
-              </div>
-            </div>
-          </Card>
+          <div className={sectionMetaCardClass}>
+            <p className={sectionMetaLabelClass}>
+              Alertas ativos
+            </p>
+            <p className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+              {loading ? "--" : dashboardAlerts.length}
+            </p>
+          </div>
+        </div>
 
-          {/* Gráfico de linha ADMIN */}
-          <Card className="p-4 bg-neutral-950 border border-neutral-800">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <div className="p-2 rounded-full bg-yellow-500/10">
-                  <Fuel className="w-4 h-4 text-yellow-400" />
-                </div>
-                <div>
-                  <h2 className="text-sm font-semibold text-gray-100">
-                    Gasto mensal · Combustível x Manutenção
-                  </h2>
-                  <p className="text-[11px] text-gray-400">
-                    Cada ponto representa a soma de todos os abastecimentos e
-                    manutenções daquele mês.
-                  </p>
-                </div>
-              </div>
-            </div>
+        <div className="p-4 md:p-5">
+          {loading ? (
+            <StateBlock message="Consolidando os alertas mais importantes da operacao..." tone="info" />
+          ) : dashboardAlerts.length === 0 ? (
+            <StateBlock message="Sem alertas criticos no momento. A operacao esta dentro do esperado." />
+          ) : (
+            <div className="grid gap-3 xl:grid-cols-2 2xl:grid-cols-4">
+              {dashboardAlerts.map((alert) => {
+                const toneClasses =
+                  alert.tone === "danger"
+                    ? "border-red-200 bg-red-50/90 text-red-700 dark:border-red-400/20 dark:bg-red-500/10 dark:text-red-200"
+                    : alert.tone === "warning"
+                      ? "border-blue-200 bg-blue-50/90 text-blue-700 dark:border-yellow-400/20 dark:bg-yellow-400/10 dark:text-yellow-200"
+                      : "border-blue-100 bg-white text-blue-700 dark:border-yellow-400/10 dark:bg-slate-950/60 dark:text-slate-200";
 
-            {monthlyTotals.length === 0 ? (
-              <p className="text-sm text-gray-400">
-                Ainda não há dados suficientes para montar o gráfico mensal.
+                return (
+                  <div
+                    key={alert.id}
+                    className={detailCardClass}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div
+                        className={cn(
+                          "flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border",
+                          toneClasses
+                        )}
+                      >
+                        <AlertTriangle className="h-5 w-5" />
+                      </div>
+
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className={cn("h-9 rounded-xl px-3", alertActionClass)}
+                        onClick={() => router.push(alert.href)}
+                      >
+                        {alert.actionLabel}
+                        <ArrowRight className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+
+                    <div className="mt-4 space-y-2">
+                      <h3 className="text-sm font-semibold text-slate-950 dark:text-white">
+                        {alert.title}
+                      </h3>
+                      <p className="text-sm leading-6 text-slate-500 dark:text-slate-400">
+                        {alert.description}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </Card>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {isAdmin ? (
+          <>
+            <MetricCard
+              label="Frota monitorada"
+              value={loading ? "--" : String(totalVeiculos)}
+              helper={`${Math.round(disponibilidadePercentual)}% da frota esta disponivel hoje.`}
+              icon={Car}
+              accent="yellow"
+              className={dashboardMetricClass}
+              aside={
+                <div className="flex flex-wrap gap-2">
+                  <span className={softPillClass}>
+                    {veiculosEmRota} em rota
+                  </span>
+                  <span className={accentPillClass}>
+                    {veiculosEmManutencao} em manutencao
+                  </span>
+                </div>
+              }
+            />
+            <MetricCard
+              label="Rotas concluidas no mes"
+              value={loading ? "--" : String(finalizadasMes.length)}
+              helper={`${drivers.length} motoristas em leitura e ${rotasEmAndamento.length} rotas ainda abertas.`}
+              icon={MapIcon}
+              accent="slate"
+              className={dashboardMetricClass}
+              aside={
+                <TrendChip
+                  comparison={rotasComparativo}
+                  previousLabel={previousPeriodLabel}
+                  emptyLabel="Primeiro fechamento comparavel"
+                />
+              }
+            />
+            <MetricCard
+              label="Custo do mes"
+              value={loading ? "--" : formatCurrency(totalCustoMes)}
+              helper={`${formatCurrency(totalCombustivelMes)} em combustivel e ${formatCurrency(totalManutencaoMes)} em manutencao.`}
+              icon={CircleDollarSign}
+              accent="yellow"
+              className={dashboardMetricClass}
+              aside={
+                <TrendChip
+                  comparison={custoComparativo}
+                  higherIsBetter={false}
+                  previousLabel={previousPeriodLabel}
+                  emptyLabel="Sem base de custo anterior"
+                />
+              }
+            />
+            <MetricCard
+              label="Custo por km"
+              value={loading ? "--" : formatCurrency(custoPorKmMes)}
+              helper={
+                totalKmMes > 0
+                  ? `${formatNumber(totalKmMes, " km")} finalizados no periodo atual.`
+                  : "Aguardando quilometragem finalizada para consolidar este indicador."
+              }
+              icon={Gauge}
+              accent="yellow"
+              className={dashboardMetricClass}
+              aside={
+                <TrendChip
+                  comparison={custoPorKmComparativo}
+                  higherIsBetter={false}
+                  previousLabel={previousPeriodLabel}
+                  emptyLabel="Sem base de custo por km"
+                />
+              }
+            />
+          </>
+        ) : (
+          <>
+            <MetricCard
+              label="Veiculos sob sua responsabilidade"
+              value={loading ? "--" : String(vehicles.length)}
+              helper={`${veiculosDisponiveis} disponiveis e ${veiculosEmRota} em rota.`}
+              icon={Car}
+              accent="yellow"
+              className={dashboardMetricClass}
+              aside={
+                <div className="flex flex-wrap gap-2">
+                  <span className={softPillClass}>
+                    {veiculosDisponiveis} livres agora
+                  </span>
+                  <span className={accentPillClass}>
+                    {veiculosEmManutencao} em oficina
+                  </span>
+                </div>
+              }
+            />
+            <MetricCard
+              label="Rotas em acompanhamento"
+              value={loading ? "--" : String(rotasEmAndamento.length)}
+              helper={`${finalizadasMes.length} rotas finalizadas no periodo atual.`}
+              icon={MapIcon}
+              accent="slate"
+              className={dashboardMetricClass}
+              aside={
+                <div className="flex flex-wrap gap-2">
+                  <TrendChip
+                    comparison={rotasComparativo}
+                    previousLabel={previousPeriodLabel}
+                    emptyLabel="Primeiro fechamento comparavel"
+                  />
+                  {rotasLongasEmAndamento.length > 0 ? (
+                    <span className={accentPillClass}>
+                      {rotasLongasEmAndamento.length} rota(s) longa(s)
+                    </span>
+                  ) : null}
+                </div>
+              }
+            />
+            <MetricCard
+              label="Custo do mes"
+              value={loading ? "--" : formatCurrency(totalCustoMes)}
+              helper={`${formatCurrency(totalCombustivelMes)} em combustivel e ${formatCurrency(totalManutencaoMes)} em manutencao.`}
+              icon={CircleDollarSign}
+              accent="yellow"
+              className={dashboardMetricClass}
+              aside={
+                <TrendChip
+                  comparison={custoComparativo}
+                  higherIsBetter={false}
+                  previousLabel={previousPeriodLabel}
+                  emptyLabel="Sem base de custo anterior"
+                />
+              }
+            />
+            <MetricCard
+              label="Pendencias ativas"
+              value={loading ? "--" : String(pendenciasAtivas)}
+              helper={`${manutencoesEmAndamento.length} manutencoes abertas e ${rotasLongasEmAndamento.length} rota(s) com longa duracao.`}
+              icon={Wrench}
+              accent="red"
+              className={dashboardMetricClass}
+              aside={
+                <TrendChip
+                  comparison={manutencoesComparativo}
+                  higherIsBetter={false}
+                  previousLabel={previousPeriodLabel}
+                  emptyLabel="Sem base anterior"
+                />
+              }
+            />
+          </>
+        )}
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-3">
+        <Card className={cn(dashboardSectionClass, "xl:col-span-2")}>
+          <div className="flex flex-col gap-3 border-b border-border px-5 py-5 md:flex-row md:items-start md:justify-between">
+            <div className="space-y-1">
+              <p className={sectionEyebrowClass}>
+                Custos da frota
               </p>
+              <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+                Evolucao mensal de combustivel e manutencao
+              </h2>
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                Leitura clara da evolucao de custos no tempo.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-3 md:items-end">
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant={costChartMode === "split" ? "secondary" : "outline"}
+                  className={
+                    costChartMode === "split"
+                      ? isDarkTheme
+                        ? ""
+                        : "border-blue-600/10 bg-blue-600 text-white hover:bg-blue-500 hover:text-white"
+                      : actionOutlineClass
+                  }
+                  onClick={() => setCostChartMode("split")}
+                >
+                  Combustivel + manutencao
+                </Button>
+                <Button
+                  size="sm"
+                  variant={costChartMode === "total" ? "secondary" : "outline"}
+                  className={
+                    costChartMode === "total"
+                      ? isDarkTheme
+                        ? ""
+                        : "border-blue-600/10 bg-blue-600 text-white hover:bg-blue-500 hover:text-white"
+                      : actionOutlineClass
+                  }
+                  onClick={() => setCostChartMode("total")}
+                >
+                  Custo total
+                </Button>
+              </div>
+
+              <div className={sectionMetaCardClass}>
+                <p className={sectionMetaLabelClass}>
+                  Fechamento atual
+                </p>
+                <p className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+                  {loading ? "--" : formatCurrency(totalCustoMes)}
+                </p>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  {currentPeriodLabel}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="h-[320px] p-4 md:h-[360px] md:p-6">
+            {loading ? (
+              <StateBlock message="Montando a linha do tempo de custos..." tone="info" />
+            ) : monthlySeries.length === 0 ? (
+              <StateBlock message="Ainda nao ha historico suficiente para montar o grafico." />
             ) : (
-              <>
-                <div className="h-64">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart
-                      data={monthlyTotals}
-                      margin={{ top: 10, right: 20, left: 0, bottom: 0 }}
-                    >
-                      <CartesianGrid
-                        strokeDasharray="3 3"
-                        stroke="#111827"
-                      />
-                      <XAxis
-                        dataKey="label"
-                        tick={{ fontSize: 11, fill: "#9CA3AF" }}
-                      />
-                      <YAxis
-                        tick={{ fontSize: 11, fill: "#9CA3AF" }}
-                        width={70}
-                      />
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={monthlySeries}>
+                  <defs>
+                    <linearGradient id="dashboardTotalGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor={chartColors.total} stopOpacity={0.28} />
+                      <stop offset="95%" stopColor={chartColors.total} stopOpacity={0.03} />
+                    </linearGradient>
+                    <linearGradient id="dashboardFuelGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor={chartColors.fuel} stopOpacity={0.32} />
+                      <stop offset="95%" stopColor={chartColors.fuel} stopOpacity={0.03} />
+                    </linearGradient>
+                    <linearGradient id="dashboardMaintGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor={chartColors.maint} stopOpacity={0.24} />
+                      <stop offset="95%" stopColor={chartColors.maint} stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+
+                  <CartesianGrid stroke={chartColors.grid} strokeDasharray="4 4" />
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fill: chartColors.axis, fontSize: 11 }}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <YAxis
+                    tick={{ fill: chartColors.axis, fontSize: 11 }}
+                    tickFormatter={(value) => `R$${formatCompactNumber(Number(value))}`}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  {costChartMode === "split" ? (
+                    <>
                       <Tooltip
-                        formatter={(value: any, _name, entry: any) => {
-                          const key = entry?.dataKey as string;
-                          const label =
-                            key === "fuelTotal"
-                              ? "Combustível"
-                              : "Manutenção";
-                          return [
-                            `R$ ${Number(value || 0).toFixed(2)}`,
-                            label,
-                          ];
-                        }}
-                        labelFormatter={(label) => `Mês: ${label}`}
-                        contentStyle={{
-                          backgroundColor: "#020617",
-                          border: "1px solid #374151",
-                          borderRadius: 8,
-                          fontSize: 12,
-                          color: "#E5E7EB",
-                        }}
+                        contentStyle={chartTooltipStyle}
+                        formatter={(value, name) => [
+                          formatCurrency(Number(value)),
+                          name === "fuelTotal" ? "Combustivel" : "Manutencao",
+                        ]}
                       />
-                      <Line
+                      <Area
                         type="monotone"
                         dataKey="fuelTotal"
-                        name="Combustível"
-                        stroke="#FACC15"
-                        strokeWidth={2}
-                        dot={{
-                          r: 3,
-                          stroke: "#FACC15",
-                          fill: "#020617",
-                        }}
-                        activeDot={{ r: 5 }}
+                        stroke={chartColors.fuel}
+                        fill="url(#dashboardFuelGradient)"
+                        strokeWidth={3}
                       />
-                      <Line
+                      <Area
                         type="monotone"
                         dataKey="maintTotal"
-                        name="Manutenção"
-                        stroke="#38BDF8"
-                        strokeWidth={2}
-                        dot={{
-                          r: 3,
-                          stroke: "#38BDF8",
-                          fill: "#020617",
-                        }}
-                        activeDot={{ r: 5 }}
+                        stroke={chartColors.maint}
+                        fill="url(#dashboardMaintGradient)"
+                        strokeWidth={3}
                       />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
+                    </>
+                  ) : (
+                    <>
+                      <Tooltip
+                        contentStyle={chartTooltipStyle}
+                        formatter={(value) => [formatCurrency(Number(value)), "Custo total"]}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="totalCost"
+                        stroke={chartColors.total}
+                        fill="url(#dashboardTotalGradient)"
+                        strokeWidth={3}
+                      />
+                    </>
+                  )}
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </Card>
 
-                {lastMonthTotals && (
-                  <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-gray-400">
-                    <span className="inline-flex items-center gap-1 rounded-full bg-neutral-950 border border-neutral-800 px-3 py-1">
-                      <span className="w-2 h-2 rounded-full bg-yellow-400" />
-                      Último mês ({lastMonthTotals.label}) · Combustível:{" "}
-                      <span className="text-yellow-300 font-semibold">
-                        R$ {lastMonthTotals.fuel.toFixed(2)}
+        <div className="grid gap-5">
+          <Card className={dashboardSectionClass}>
+            <div className="border-b border-border px-5 py-5">
+              <p className={sectionEyebrowClass}>
+                Status da frota
+              </p>
+              <h2 className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+                Distribuicao atual dos veiculos
+              </h2>
+            </div>
+
+            <div className="relative h-[300px] p-4 md:h-[320px] md:p-6">
+              {loading ? (
+                <StateBlock message="Organizando o status da frota..." tone="info" />
+              ) : fleetStatusData.length === 0 ? (
+                <StateBlock message="Nenhum status disponivel para exibir." />
+              ) : (
+                <>
+                  <ResponsiveContainer width="100%" height="82%">
+                    <PieChart>
+                      <Pie
+                        data={fleetStatusData}
+                        dataKey="value"
+                        nameKey="name"
+                        innerRadius={68}
+                        outerRadius={104}
+                        paddingAngle={3}
+                        strokeWidth={0}
+                      >
+                        {fleetStatusData.map((item) => (
+                          <Cell key={item.name} fill={item.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                        contentStyle={chartTooltipStyle}
+                        formatter={(value, name) => [value, name]}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                    <div className="rounded-full border border-blue-100 bg-white/95 px-5 py-4 text-center shadow-[0_12px_28px_rgba(37,99,235,0.1)] dark:border-yellow-400/10 dark:bg-[linear-gradient(180deg,rgba(8,8,10,0.92),rgba(15,15,17,0.98))]">
+                      <p className={sectionMetaLabelClass}>
+                        Frota
+                      </p>
+                      <p className="mt-1 text-2xl font-semibold text-slate-950 dark:text-white">
+                        {totalVeiculos}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-2 flex flex-wrap justify-center gap-2">
+                    {fleetStatusData.map((item) => (
+                      <span
+                        key={item.name}
+                        className={cn("inline-flex items-center gap-2", softPillClass)}
+                      >
+                        <span
+                          className="h-2.5 w-2.5 rounded-full"
+                          style={{ backgroundColor: item.color }}
+                        />
+                        {item.name}: {item.value}
                       </span>
-                    </span>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-neutral-950 border border-neutral-800 px-3 py-1">
-                      <span className="w-2 h-2 rounded-full bg-sky-400" />
-                      Manutenção:{" "}
-                      <span className="text-sky-300 font-semibold">
-                        R$ {lastMonthTotals.maint.toFixed(2)}
-                      </span>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </Card>
+
+          <Card className={dashboardSectionClass}>
+            <div className="border-b border-border px-5 py-5">
+              <p className={sectionNeutralEyebrowClass}>
+                Movimento do mes
+              </p>
+              <h2 className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+                Volume operacional
+              </h2>
+            </div>
+
+            <div className="h-[230px] p-4 md:p-6">
+              {loading ? (
+                <StateBlock message="Calculando volumes do periodo..." tone="info" />
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={operationalData} barCategoryGap={24}>
+                    <CartesianGrid
+                      stroke={chartColors.grid}
+                      strokeDasharray="4 4"
+                      vertical={false}
+                    />
+                    <XAxis
+                      dataKey="label"
+                      tick={{ fill: chartColors.axis, fontSize: 11 }}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <YAxis
+                      allowDecimals={false}
+                      tick={{ fill: chartColors.axis, fontSize: 11 }}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <Tooltip
+                      contentStyle={chartTooltipStyle}
+                      formatter={(value) => [value, "Registros"]}
+                    />
+                    <Bar dataKey="value" radius={[10, 10, 0, 0]}>
+                      {operationalData.map((item) => (
+                        <Cell key={item.label} fill={item.fill} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </Card>
+        </div>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Card className={dashboardSectionClass}>
+          <div className="flex flex-col gap-3 border-b border-border px-5 py-5 md:flex-row md:items-start md:justify-between">
+            <div>
+              <p className={sectionNeutralEyebrowClass}>
+                {isAdmin ? "Rotas monitoradas" : "Rotas em acompanhamento"}
+              </p>
+              <h2 className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+                {isAdmin ? "Rotas em andamento agora" : "Rotas ativas da sua operacao"}
+              </h2>
+            </div>
+
+            <Button
+              size="sm"
+              variant="outline"
+              className={actionOutlineClass}
+              onClick={() => router.push("/rotas")}
+            >
+              Abrir modulo
+            </Button>
+          </div>
+
+          <div className="p-4 md:p-5">
+            {loading ? (
+              <StateBlock message="Buscando as rotas em andamento..." tone="info" />
+            ) : ultimasRotasEmAndamento.length === 0 ? (
+              <StateBlock message="Nenhuma rota em andamento no momento." />
+            ) : (
+              <div className="space-y-3">
+                {ultimasRotasEmAndamento.map((route) => (
+                  <div
+                    key={route.id}
+                    className={detailCardClass}
+                  >
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-950 dark:text-white">
+                          {route.vehiclePlate} - {route.vehicleModel}
+                        </p>
+                        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                          Motorista: {route.driverName}
+                        </p>
+                        <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                          {route.origem || "Origem nao informada"} -&gt;{" "}
+                          {route.destino || "Destino nao informado"}
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 md:min-w-[320px]">
+                        <div className={detailStatClass}>
+                          <p className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
+                            Inicio
+                          </p>
+                          <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">
+                            {formatTime(route.startAt)}
+                          </p>
+                        </div>
+                        <div className={detailStatClass}>
+                          <p className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
+                            KM inicial
+                          </p>
+                          <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">
+                            {formatNumber(route.startKm, " km")}
+                          </p>
+                        </div>
+                        <div className={detailAccentStatClass}>
+                          <p className={detailAccentLabelClass}>
+                            Duracao
+                          </p>
+                          <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">
+                            {`${getHoursSince(route.startAt) ?? 0}h`}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Card>
+
+        <Card className={dashboardSectionClass}>
+          <div className="flex flex-col gap-3 border-b border-border px-5 py-5 md:flex-row md:items-start md:justify-between">
+            <div>
+              <p className={sectionEyebrowClass}>
+                Combustivel
+              </p>
+              <h2 className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+                {isAdmin ? "Ultimos abastecimentos do mes" : "Seus abastecimentos mais recentes"}
+              </h2>
+            </div>
+
+            <Button
+              size="sm"
+              variant="outline"
+              className={actionOutlineClass}
+              onClick={() => router.push("/abastecimentos")}
+            >
+              Abrir modulo
+            </Button>
+          </div>
+
+          <div className="p-4 md:p-5">
+            {loading ? (
+              <StateBlock message="Buscando os abastecimentos mais recentes..." tone="info" />
+            ) : ultimosAbastecimentos.length === 0 ? (
+              <StateBlock message="Nenhum abastecimento registrado neste mes." />
+            ) : (
+              <div className="space-y-3">
+                {ultimosAbastecimentos.map((fueling) => (
+                  <div
+                    key={fueling.id}
+                    className={detailCardClass}
+                  >
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-950 dark:text-white">
+                          {fueling.vehiclePlate} - {fueling.vehicleModel}
+                        </p>
+                        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                          {fueling.storeId}
+                        </p>
+                        <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                          {formatDateTime(fueling.date)}
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 md:min-w-[240px]">
+                        <div className={detailStatClass}>
+                          <p className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
+                            Litros
+                          </p>
+                          <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">
+                            {formatNumber(fueling.liters, " L")}
+                          </p>
+                        </div>
+                        <div className={detailAccentStatClass}>
+                          <p className={detailAccentLabelClass}>
+                            Total
+                          </p>
+                          <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">
+                            {formatCurrency(fueling.total)}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Card>
+      </div>
+
+      <Card
+        className={cn(
+          "app-table-wrap gap-0 overflow-hidden py-0",
+          !isDarkTheme &&
+            "border-blue-200/80 bg-[linear-gradient(180deg,rgba(239,246,255,0.95),rgba(255,255,255,0.99))] shadow-[0_20px_48px_rgba(37,99,235,0.11)]"
+        )}
+      >
+        <div className="flex flex-col gap-3 border-b border-border px-5 py-5 md:flex-row md:items-start md:justify-between">
+          <div className="space-y-1">
+            <p className={sectionEyebrowClass}>
+              Manutencao
+            </p>
+            <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+              {isAdmin ? "Manutencoes em andamento" : "Manutencoes que exigem retorno"}
+            </h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Acompanhamento rapido dos veiculos que ainda nao foram liberados.
+            </p>
+          </div>
+
+          <div className={sectionMetaCardClass}>
+            <div className="flex items-center gap-3">
+              <div>
+                <p className={sectionMetaLabelClass}>
+                  Abertas agora
+                </p>
+                <p className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+                  {loading ? "--" : qtdManutencoesEmAndamento}
+                </p>
+              </div>
+
+              <Button
+                size="sm"
+                variant="outline"
+                className={actionOutlineClass}
+                onClick={() => router.push("/manutencoes")}
+              >
+                Abrir modulo
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="p-4 md:p-5">
+            <StateBlock message="Buscando as manutencoes em andamento..." tone="info" />
+          </div>
+        ) : manutencoesEmAndamento.length === 0 ? (
+          <div className="px-4 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
+            Nenhuma manutencao em andamento no momento.
+          </div>
+        ) : (
+          <>
+            <div className="space-y-3 p-4 md:hidden">
+              {manutencoesEmAndamento.map((maintenance) => (
+                <div
+                  key={maintenance.id}
+                  className={detailCardClass}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-950 dark:text-white">
+                        {maintenance.vehiclePlate} - {maintenance.vehicleModel}
+                      </p>
+                      <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                        {maintenance.type}
+                      </p>
+                    </div>
+
+                    <span
+                      className={cn(
+                        "rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em]",
+                        (getDaysSince(maintenance.date) ?? 0) >= 7
+                          ? "border border-red-200 bg-red-50 text-red-700 dark:border-red-400/20 dark:bg-red-500/10 dark:text-red-200"
+                          : "border border-blue-200 bg-blue-50 text-blue-700 dark:border-yellow-400/20 dark:bg-yellow-400/10 dark:text-yellow-200"
+                      )}
+                    >
+                      {(getDaysSince(maintenance.date) ?? 0) >= 7 ? "Critica" : "Monitorar"}
                     </span>
                   </div>
-                )}
-              </>
-            )}
-          </Card>
 
-          {/* Detalhes operacionais ADMIN */}
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            {/* Rotas em andamento */}
-            <Card className="p-4 bg-neutral-950 border border-neutral-800">
-              <div className="flex items-center gap-2 mb-3">
-                <div className="p-2 rounded-full bg-yellow-500/10">
-                  <Activity className="w-4 h-4 text-yellow-400" />
-                </div>
-                <h2 className="text-sm font-semibold text-gray-100">
-                  Rotas em andamento
-                </h2>
-              </div>
-
-              {loading ? (
-                <p className="text-sm text-gray-400">Carregando...</p>
-              ) : ultimasRotasEmAndamento.length === 0 ? (
-                <p className="text-sm text-gray-400">
-                  Nenhuma rota em andamento no momento.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {ultimasRotasEmAndamento.map((r) => (
-                    <div
-                      key={r.id}
-                      className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 bg-neutral-950/60 px-3 py-2"
-                    >
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-gray-100 truncate">
-                          {r.vehiclePlate} · {r.vehicleModel}
-                        </p>
-                        <p className="text-xs text-gray-400 truncate">
-                          Motorista:{" "}
-                          <span className="text-gray-200">
-                            {r.driverName || "-"}
-                          </span>
-                        </p>
-                        <p className="text-xs text-gray-500 truncate">
-                          {r.origem ?? "-"} → {r.destino ?? "-"}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-xs text-gray-400">
-                          Início:{" "}
-                          {r.startAt
-                            ? new Date(r.startAt).toLocaleTimeString(
-                                "pt-BR",
-                                {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                }
-                              )
-                            : "-"}
-                        </p>
-                        <p className="text-xs text-gray-400">
-                          KM inicial:{" "}
-                          <span className="font-mono text-gray-100">
-                            {r.startKm} km
-                          </span>
-                        </p>
-                      </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <div className={detailStatClass}>
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
+                        Data
+                      </p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">
+                        {formatDateTime(maintenance.date)}
+                      </p>
                     </div>
-                  ))}
-                </div>
-              )}
-            </Card>
-
-            {/* Últimos abastecimentos do mês */}
-            <Card className="p-4 bg-neutral-950 border border-neutral-800">
-              <div className="flex items-center gap-2 mb-3">
-                <div className="p-2 rounded-full bg-yellow-500/10">
-                  <Fuel className="w-4 h-4 text-yellow-400" />
-                </div>
-                <h2 className="text-sm font-semibold text-gray-100">
-                  Últimos abastecimentos · mês atual
-                </h2>
-              </div>
-
-              {loading ? (
-                <p className="text-sm text-gray-400">Carregando...</p>
-              ) : ultimosAbastecimentos.length === 0 ? (
-                <p className="text-sm text-gray-400">
-                  Nenhum abastecimento registrado neste mês.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {ultimosAbastecimentos.map((f) => (
-                    <div
-                      key={f.id}
-                      className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 bg-neutral-950/60 px-3 py-2"
-                    >
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-gray-100 truncate">
-                          {f.vehiclePlate} · {f.vehicleModel}
-                        </p>
-                        <p className="text-xs text-gray-400">{f.storeId}</p>
-                        <p className="text-xs text-gray-500">
-                          {f.date
-                            ? new Date(f.date).toLocaleString("pt-BR")
-                            : "-"}
-                        </p>
-                      </div>
-                      <div className="text-right text-xs">
-                        <p className="text-gray-400">
-                          {Number(f.liters || 0).toFixed(2)} L × R${" "}
-                          {Number(f.pricePerL || 0).toFixed(2)}
-                        </p>
-                        <p className="font-semibold text-yellow-300">
-                          R$ {Number(f.total || 0).toFixed(2)}
-                        </p>
-                      </div>
+                    <div className={detailStatClass}>
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
+                        Loja
+                      </p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">
+                        {maintenance.storeId}
+                      </p>
                     </div>
-                  ))}
+                    <div className={detailAccentStatClass}>
+                      <p className={detailAccentLabelClass}>
+                        Custo
+                      </p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">
+                        {formatCurrency(maintenance.cost)}
+                      </p>
+                    </div>
+                    <div className={detailStatClass}>
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
+                        Dias abertos
+                      </p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">
+                        {`${getDaysSince(maintenance.date) ?? 0} dia(s)`}
+                      </p>
+                    </div>
+                  </div>
                 </div>
-              )}
-            </Card>
-          </div>
-
-          {/* Manutenções em andamento */}
-          <Card className="p-4 bg-neutral-950 border border-neutral-800">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="p-2 rounded-full bg-yellow-500/10">
-                <Wrench className="w-4 h-4 text-yellow-400" />
-              </div>
-              <h2 className="text-sm font-semibold text-gray-100">
-                Manutenções em andamento
-              </h2>
+              ))}
             </div>
 
-            {loading ? (
-              <p className="text-sm text-gray-400">Carregando...</p>
-            ) : manutencoesEmAndamento.length === 0 ? (
-              <p className="text-sm text-gray-400">
-                Nenhum veículo em manutenção no momento.
-              </p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm border-collapse">
-                  <thead>
-                    <tr className="text-left border-b border-neutral-800 text-gray-400">
-                      <th className="py-2 pr-2">Data</th>
-                      <th className="py-2 px-2">Veículo</th>
-                      <th className="py-2 px-2">Loja</th>
-                      <th className="py-2 px-2">Tipo</th>
-                      <th className="py-2 px-2">Custo (R$)</th>
+            <div className="hidden overflow-x-auto md:block">
+              <table className="app-table">
+                <thead>
+                  <tr>
+                    <th>Data</th>
+                    <th>Veiculo</th>
+                    <th>Loja</th>
+                    <th>Tipo</th>
+                    <th>Custo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {manutencoesEmAndamento.map((maintenance) => (
+                    <tr key={maintenance.id}>
+                      <td>{formatDateTime(maintenance.date)}</td>
+                      <td>
+                        <div className="space-y-1">
+                          <p className="font-semibold text-slate-900 dark:text-white">
+                            {maintenance.vehiclePlate}
+                          </p>
+                          <p className="text-xs text-slate-500 dark:text-slate-400">
+                            {maintenance.vehicleModel}
+                          </p>
+                        </div>
+                      </td>
+                      <td>{maintenance.storeId}</td>
+                      <td>
+                        <div className="space-y-1">
+                          <p>{maintenance.type}</p>
+                          <span
+                            className={cn(
+                              "inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em]",
+                              (getDaysSince(maintenance.date) ?? 0) >= 7
+                                ? "border border-red-200 bg-red-50 text-red-700 dark:border-red-400/20 dark:bg-red-500/10 dark:text-red-200"
+                                : "border border-blue-200 bg-blue-50 text-blue-700 dark:border-yellow-400/20 dark:bg-yellow-400/10 dark:text-yellow-200"
+                            )}
+                          >
+                            {(getDaysSince(maintenance.date) ?? 0) >= 7 ? "Critica" : "Monitorar"}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="font-semibold text-slate-900 dark:text-white">
+                        <div className="space-y-1">
+                          <p>{formatCurrency(maintenance.cost)}</p>
+                          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                            {`${getDaysSince(maintenance.date) ?? 0} dia(s) aberto`}
+                          </p>
+                        </div>
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {manutencoesEmAndamento.map((m) => (
-                      <tr
-                        key={m.id}
-                        className="border-b border-neutral-900 hover:bg-neutral-800/60"
-                      >
-                        <td className="py-2 pr-2">
-                          {m.date
-                            ? new Date(m.date).toLocaleString("pt-BR")
-                            : "-"}
-                        </td>
-                        <td className="py-2 px-2 font-mono">
-                          {m.vehiclePlate} · {m.vehicleModel}
-                        </td>
-                        <td className="py-2 px-2">{m.storeId}</td>
-                        <td className="py-2 px-2">{m.type}</td>
-                        <td className="py-2 px-2 text-yellow-300">
-                          R$ {Number(m.cost || 0).toFixed(2)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Card>
-        </>
-      ) : (
-        /* ====================== MODO OPERADOR / USER ====================== */
-        <>
-          {/* Painel frontal OPERADOR */}
-          <Card className="relative overflow-hidden border border-neutral-800 bg-gradient-to-r from-neutral-950 via-neutral-900 to-neutral-950">
-            <div className="absolute inset-y-0 right-0 w-40 bg-yellow-500/5 blur-3xl pointer-events-none" />
-            <div className="relative p-5 md:p-6 flex flex-col gap-4">
-              <div className="space-y-2">
-                <p className="text-xs uppercase tracking-[0.16em] text-yellow-400/80">
-                  Área do motorista / responsável
-                </p>
-                <h1 className="text-2xl md:text-3xl font-bold text-white">
-                  Olá, {user.name}! Vamos cuidar da frota hoje?
-                </h1>
-                <p className="text-sm text-gray-300 max-w-2xl">
-                  Aqui você vê os veículos que estão sob sua responsabilidade,
-                  as rotas em andamento e os registros deste mês dos veículos
-                  que você compartilha com outros responsáveis.
-                </p>
-              </div>
-
-              {/* Botões de ação rápida */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                <Button
-                  className="w-full h-11 bg-yellow-500 hover:bg-yellow-400 text-black text-sm font-semibold flex items-center justify-center gap-2"
-                  onClick={() => router.push("/rotas")}
-                >
-                  <MapIcon className="w-4 h-4" />
-                  Iniciar rota
-                </Button>
-                <Button
-                  className="w-full h-11 bg-neutral-900 border border-yellow-500/60 hover:bg-neutral-800 text-yellow-300 text-sm font-semibold flex items-center justify-center gap-2"
-                  onClick={() => router.push("/abastecimentos")}
-                >
-                  <Fuel className="w-4 h-4" />
-                  Registrar abastecimento
-                </Button>
-                <Button
-                  className="w-full h-11 bg-neutral-900 border border-sky-500/60 hover:bg-neutral-800 text-sky-300 text-sm font-semibold flex items-center justify-center gap-2"
-                  onClick={() => router.push("/manutencoes")}
-                >
-                  <Wrench className="w-4 h-4" />
-                  Registrar manutenção
-                </Button>
-              </div>
-
-              {/* Chips rápidos */}
-              <div className="flex flex-wrap gap-2 pt-1">
-                <span className="inline-flex items-center gap-1 rounded-full bg-neutral-950/80 border border-neutral-700 px-3 py-1 text-[11px] text-gray-300">
-                  <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                  {rotasEmAndamento.length} rota(s) em andamento
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full bg-neutral-950/80 border border-neutral-700 px-3 py-1 text-[11px] text-gray-300">
-                  <span className="w-2 h-2 rounded-full bg-yellow-400" />
-                  {vehicles.length} veículo(s) sob sua responsabilidade
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full bg-neutral-950/80 border border-neutral-700 px-3 py-1 text-[11px] text-gray-300">
-                  <span className="w-2 h-2 rounded-full bg-sky-400" />
-                  {fuelingsMes.length} abastecimento(s) neste mês
-                </span>
-              </div>
-            </div>
-          </Card>
-
-          {errorMsg && (
-            <p className="text-sm text-red-400 font-medium">{errorMsg}</p>
-          )}
-
-          {/* Cards principais OPERADOR */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Card className="p-4 bg-neutral-950 border border-neutral-800 flex items-center justify-between">
-              <div>
-                <p className="text-xs text-gray-400 uppercase tracking-wide">
-                  Meus veículos
-                </p>
-                <p className="text-2xl font-bold text-yellow-400">
-                  {vehicles.length}
-                </p>
-                <p className="text-xs text-gray-400 mt-1">
-                  {veiculosDisponiveis} disponíveis · {veiculosEmRota} em rota
-                </p>
-              </div>
-              <div className="p-3 rounded-2xl bg-yellow-500/10">
-                <Car className="w-6 h-6 text-yellow-400" />
-              </div>
-            </Card>
-
-            <Card className="p-4 bg-neutral-950 border border-neutral-800 flex items-center justify-between">
-              <div>
-                <p className="text-xs text-gray-400 uppercase tracking-wide">
-                  Rotas em andamento
-                </p>
-                <p className="text-2xl font-bold text-yellow-400">
-                  {rotasEmAndamento.length}
-                </p>
-                <p className="text-xs text-gray-400 mt-1">
-                  Qualquer responsável pode finalizar as rotas em comum.
-                </p>
-              </div>
-              <div className="p-3 rounded-2xl bg-yellow-500/10">
-                <MapIcon className="w-6 h-6 text-yellow-400" />
-              </div>
-            </Card>
-
-            <Card className="p-4 bg-neutral-950 border border-neutral-800 flex items-center justify-between">
-              <div>
-                <p className="text-xs text-gray-400 uppercase tracking-wide">
-                  Abastecimentos · mês atual
-                </p>
-                <p className="text-2xl font-bold text-yellow-400">
-                  {fuelingsMes.length}
-                </p>
-                <p className="text-xs text-gray-400 mt-1">
-                  Registros deste mês dos veículos sob sua responsabilidade.
-                </p>
-              </div>
-              <div className="p-3 rounded-2xl bg-yellow-500/10">
-                <Fuel className="w-6 h-6 text-yellow-400" />
-              </div>
-            </Card>
-          </div>
-
-          {/* Bloco "minhas atividades" */}
-          <Card className="p-4 bg-neutral-950 border border-neutral-800">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="p-3 rounded-2xl bg-yellow-500/10">
-                <Users className="w-5 h-5 text-yellow-400" />
-              </div>
-              <div>
-                <p className="text-xs text-gray-400 uppercase tracking-wide">
-                  Resumo do seu dia
-                </p>
-                <p className="text-sm text-gray-200">
-                  Você é responsável por{" "}
-                  <span className="font-semibold text-yellow-400">
-                    {vehicles.length} veículo(s)
-                  </span>{" "}
-                  e tem{" "}
-                  <span className="font-semibold text-yellow-400">
-                    {rotasEmAndamento.length} rota(s)
-                  </span>{" "}
-                  em andamento agora (podendo finalizar rotas iniciadas pelos
-                  outros responsáveis).
-                </p>
-              </div>
-            </div>
-          </Card>
-
-          {/* Listas de operação do operador */}
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            {/* Minhas rotas em andamento */}
-            <Card className="p-4 bg-neutral-950 border border-neutral-800">
-              <div className="flex items-center gap-2 mb-3">
-                <div className="p-2 rounded-full bg-yellow-500/10">
-                  <Activity className="w-4 h-4 text-yellow-400" />
-                </div>
-                <h2 className="text-sm font-semibold text-gray-100">
-                  Minhas rotas em andamento
-                </h2>
-              </div>
-
-              {loading ? (
-                <p className="text-sm text-gray-400">Carregando...</p>
-              ) : ultimasRotasEmAndamento.length === 0 ? (
-                <p className="text-sm text-gray-400">
-                  Nenhuma rota em andamento no momento.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {ultimasRotasEmAndamento.map((r) => (
-                    <div
-                      key={r.id}
-                      className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 bg-neutral-950/60 px-3 py-2"
-                    >
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-gray-100 truncate">
-                          {r.vehiclePlate} · {r.vehicleModel}
-                        </p>
-                        <p className="text-xs text-gray-400 truncate">
-                          Origem: {r.origem ?? "-"}
-                        </p>
-                        <p className="text-xs text-gray-500 truncate">
-                          Destino: {r.destino ?? "-"}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-xs text-gray-400">
-                          Início:{" "}
-                          {r.startAt
-                            ? new Date(r.startAt).toLocaleTimeString(
-                                "pt-BR",
-                                {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                }
-                              )
-                            : "-"}
-                        </p>
-                        <p className="text-xs text-gray-400">
-                          KM inicial:{" "}
-                          <span className="font-mono text-gray-100">
-                            {r.startKm} km
-                          </span>
-                        </p>
-                      </div>
-                    </div>
                   ))}
-                </div>
-              )}
-            </Card>
-
-            {/* Meus últimos abastecimentos do mês */}
-            <Card className="p-4 bg-neutral-950 border border-neutral-800">
-              <div className="flex items-center gap-2 mb-3">
-                <div className="p-2 rounded-full bg-yellow-500/10">
-                  <Fuel className="w-4 h-4 text-yellow-400" />
-                </div>
-                <h2 className="text-sm font-semibold text-gray-100">
-                  Meus últimos abastecimentos · mês atual
-                </h2>
-              </div>
-
-              {loading ? (
-                <p className="text-sm text-gray-400">Carregando...</p>
-              ) : ultimosAbastecimentos.length === 0 ? (
-                <p className="text-sm text-gray-400">
-                  Nenhum abastecimento registrado por você neste mês.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {ultimosAbastecimentos.map((f) => (
-                    <div
-                      key={f.id}
-                      className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 bg-neutral-950/60 px-3 py-2"
-                    >
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-gray-100 truncate">
-                          {f.vehiclePlate} · {f.vehicleModel}
-                        </p>
-                        <p className="text-xs text-gray-400 truncate">
-                          {f.storeId}
-                        </p>
-                        <p className="text-xs text-gray-500">
-                          {f.date
-                            ? new Date(f.date).toLocaleString("pt-BR")
-                            : "-"}
-                        </p>
-                      </div>
-                      <div className="text-right text-xs">
-                        <p className="text-gray-400">
-                          {Number(f.liters || 0).toFixed(2)} L × R${" "}
-                          {Number(f.pricePerL || 0).toFixed(2)}
-                        </p>
-                        <p className="font-semibold text-yellow-300">
-                          R$ {Number(f.total || 0).toFixed(2)}
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Card>
-          </div>
-
-          {/* Minhas manutenções em andamento */}
-          <Card className="p-4 bg-neutral-950 border border-neutral-800">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="p-2 rounded-full bg-yellow-500/10">
-                <Wrench className="w-4 h-4 text-yellow-400" />
-              </div>
-              <h2 className="text-sm font-semibold text-gray-100">
-                Minhas manutenções em andamento
-              </h2>
+                </tbody>
+              </table>
             </div>
-
-            {loading ? (
-              <p className="text-sm text-gray-400">Carregando...</p>
-            ) : manutencoesEmAndamento.length === 0 ? (
-              <p className="text-sm text-gray-400">
-                Nenhum veículo em manutenção no momento.
-              </p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm border-collapse">
-                  <thead>
-                    <tr className="text-left border-b border-neutral-800 text-gray-400">
-                      <th className="py-2 pr-2">Data</th>
-                      <th className="py-2 px-2">Veículo</th>
-                      <th className="py-2 px-2">Loja</th>
-                      <th className="py-2 px-2">Tipo</th>
-                      <th className="py-2 px-2">Custo (R$)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {manutencoesEmAndamento.map((m) => (
-                      <tr
-                        key={m.id}
-                        className="border-b border-neutral-900 hover:bg-neutral-800/60"
-                      >
-                        <td className="py-2 pr-2">
-                          {m.date
-                            ? new Date(m.date).toLocaleString("pt-BR")
-                            : "-"}
-                        </td>
-                        <td className="py-2 px-2 font-mono">
-                          {m.vehiclePlate} · {m.vehicleModel}
-                        </td>
-                        <td className="py-2 px-2">{m.storeId}</td>
-                        <td className="py-2 px-2">{m.type}</td>
-                        <td className="py-2 px-2 text-yellow-300">
-                          R$ {Number(m.cost || 0).toFixed(2)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Card>
-        </>
-      )}
+          </>
+        )}
+      </Card>
     </div>
   );
 }

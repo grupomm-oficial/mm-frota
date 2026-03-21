@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
+import { PageLoadingState } from "@/components/layout/PageLoadingState";
 
 export default function HomePage() {
   const router = useRouter();
@@ -19,8 +20,12 @@ export default function HomePage() {
   }, [user, loading, router]);
 
   return (
-    <div className="flex items-center justify-center h-screen bg-black text-yellow-400">
-      <p className="text-lg font-medium">Carregando MM Frota...</p>
+    <div className="app-shell px-4 py-6 md:px-6">
+      <PageLoadingState
+        title="Redirecionando voce"
+        description="Estamos identificando seu acesso para abrir a area correta do MM Frota."
+        compact
+      />
     </div>
   );
 }

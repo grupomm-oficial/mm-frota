@@ -1,9 +1,11 @@
 import "./globals.css";
+
 import { AuthProvider } from "@/context/AuthContext";
+import { ThemeProvider } from "@/context/ThemeContext";
 
 export const metadata = {
   title: "MM Frota",
-  description: "Sistema de Gestão de Frota do Grupo MM",
+  description: "Sistema de Gestao de Frota do Grupo MM",
 };
 
 export default function RootLayout({
@@ -12,9 +14,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="pt-br">
-      <body className="bg-black text-white">
-        <AuthProvider>{children}</AuthProvider>
+    <html lang="pt-br" className="dark" suppressHydrationWarning>
+      <body>
+        <ThemeProvider>
+          <AuthProvider>{children}</AuthProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

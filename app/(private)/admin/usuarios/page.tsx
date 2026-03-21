@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
@@ -16,9 +16,14 @@ import {
   createUserWithEmailAndPassword,
   UserCredential,
 } from "firebase/auth";
+import { ActionIconButton } from "@/components/ui/action-icon-button";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { PageLoadingState } from "@/components/layout/PageLoadingState";
+import { StatusBanner } from "@/components/layout/StatusBanner";
+import { ShieldCheck } from "lucide-react";
 
 interface AppUser {
   id: string;
@@ -149,7 +154,7 @@ export default function UsuariosPage() {
       } catch (error: any) {
         console.error("Erro ao criar usuário no Auth:", error);
         if (error.code === "auth/email-already-in-use") {
-          setErrorMsg("Este email já está em uso no Auth.");
+          setErrorMsg("Este email já est? em uso no Auth.");
         } else {
           setErrorMsg(
             "Erro ao criar usuário no Auth. Verifique o email ou tente novamente."
@@ -225,7 +230,7 @@ export default function UsuariosPage() {
         username,
       });
 
-      // 2) Se o username mudou, atualizar coleção "usernames"
+      // 2) Se o username mudou, atualizar colecao "usernames"
       if (editingUser.username && editingUser.username !== username) {
         // cria novo doc com mesmo email
         await setDoc(doc(db, "usernames", username), {
@@ -320,9 +325,25 @@ export default function UsuariosPage() {
   const isEditMode = !!editingUser;
 
   return (
-    <div className="space-y-6">
-      {/* Cabeçalho */}
-      <div className="flex items-center justify-between gap-4">
+    <div className="app-page">
+      <PageHeader
+        eyebrow="Administracao"
+        title="Gestao de usuarios"
+        description="Cadastre e mantenha os acessos do Grupo MM de forma simples e organizada."
+        icon={ShieldCheck}
+        badges={
+          <span className="app-chip">
+            <span className="h-2 w-2 rounded-full bg-amber-400" />
+            {usersList.length} usuarios
+          </span>
+        }
+        actions={<Button onClick={abrirFormNovo}>+ Novo usuario</Button>}
+      />
+
+      {errorMsg ? <StatusBanner tone="error">{errorMsg}</StatusBanner> : null}
+      {successMsg ? <StatusBanner tone="success">{successMsg}</StatusBanner> : null}
+
+      <div className="hidden items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-yellow-400">
             Gestão de Usuários
@@ -342,7 +363,7 @@ export default function UsuariosPage() {
 
       {/* Formulário (criação / edição) */}
       {formOpen && (
-        <Card className="p-4 bg-neutral-900 border border-neutral-800">
+        <Card className="app-panel p-4 md:p-5">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-lg font-semibold text-yellow-400">
               {isEditMode ? "Editar usuário" : "Novo usuário"}
@@ -360,7 +381,7 @@ export default function UsuariosPage() {
                 placeholder="Nome completo"
                 value={nome}
                 onChange={(e) => setNome(e.target.value)}
-                className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
+                className="app-field"
               />
 
               <Input
@@ -368,7 +389,7 @@ export default function UsuariosPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 disabled={isEditMode} // não mexe no email do Auth por aqui
-                className={`bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500 ${
+                className={`app-field ${
                   isEditMode ? "opacity-60 cursor-not-allowed" : ""
                 }`}
               />
@@ -377,14 +398,14 @@ export default function UsuariosPage() {
                 placeholder="Username (para login)"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
+                className="app-field"
               />
 
               <Input
                 placeholder="Loja / unidade (ex: destack-cedral)"
                 value={storeId}
                 onChange={(e) => setStoreId(e.target.value)}
-                className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
+                className="app-field"
               />
 
               <div>
@@ -392,7 +413,7 @@ export default function UsuariosPage() {
                   Papel
                 </label>
                 <select
-                  className="w-full rounded-md bg-neutral-950 border border-neutral-700 px-3 py-2 text-sm text-gray-100"
+                  className="app-select"
                   value={role}
                   onChange={(e) =>
                     setRole(e.target.value as "admin" | "user")
@@ -406,7 +427,7 @@ export default function UsuariosPage() {
 
             {!isEditMode && (
               <p className="text-xs text-gray-400">
-                Ao salvar, será gerada uma{" "}
+                Ao salvar, sera gerada uma{" "}
                 <span className="text-yellow-300 font-semibold">
                   senha temporária
                 </span>{" "}
@@ -414,16 +435,8 @@ export default function UsuariosPage() {
               </p>
             )}
 
-            {errorMsg && (
-              <p className="text-sm text-red-400 font-medium">{errorMsg}</p>
-            )}
-            {successMsg && (
-              <p className="text-sm text-green-400 font-medium">
-                {successMsg}
-              </p>
-            )}
             {tempPassword && !isEditMode && (
-              <p className="text-xs text-yellow-300">
+              <p className="text-xs text-amber-600 dark:text-amber-300">
                 Senha temporária gerada:{" "}
                 <span className="font-mono font-bold">
                   {tempPassword}
@@ -436,20 +449,20 @@ export default function UsuariosPage() {
               <Button
                 type="submit"
                 disabled={saving}
-                className="bg-yellow-500 hover:bg-yellow-400 text-black font-semibold"
+                className="font-semibold"
               >
                 {saving
                   ? isEditMode
-                    ? "Salvando alterações..."
+                    ? "Salvando alteracoes..."
                     : "Salvando..."
                   : isEditMode
-                  ? "Salvar alterações"
+                  ? "Salvar alteracoes"
                   : "Salvar usuário"}
               </Button>
               <Button
                 type="button"
-                variant="outline"
-                className="border-neutral-700 text-gray-200 hover:bg-neutral-800 text-sm"
+                variant="destructive"
+                className="text-sm"
                 onClick={() => {
                   setFormOpen(false);
                   resetForm();
@@ -463,12 +476,16 @@ export default function UsuariosPage() {
       )}
 
       {/* Lista de usuários */}
-      <Card className="p-4 bg-neutral-900 border border-neutral-800">
+      <Card className="app-panel p-4 md:p-5">
         <h2 className="text-lg font-semibold text-gray-100 mb-3">
           Usuários cadastrados
         </h2>
         {loading ? (
-          <p className="text-sm text-gray-400">Carregando usuários...</p>
+          <PageLoadingState
+            title="Carregando usuarios"
+            description="Estamos organizando os acessos cadastrados para voce continuar sem repetir a acao."
+            compact
+          />
         ) : usersList.length === 0 ? (
           <p className="text-sm text-gray-400">
             Nenhum usuário cadastrado ainda.
@@ -485,7 +502,7 @@ export default function UsuariosPage() {
                   <th className="py-2 px-2">Papel</th>
                   <th className="py-2 px-2">Status</th>
                   <th className="py-2 px-2">Senha</th>
-                  <th className="py-2 pl-2 text-right">Ações</th>
+                  <th className="py-2 pl-2 text-right">Acoes</th>
                 </tr>
               </thead>
               <tbody>
@@ -528,27 +545,16 @@ export default function UsuariosPage() {
                       )}
                     </td>
                     <td className="py-2 pl-2 text-right">
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className={`border text-xs h-7 px-2 ${
-                            u.active
-                              ? "border-red-500 text-red-300 hover:bg-red-500/10"
-                              : "border-green-500 text-green-300 hover:bg-green-500/10"
-                          }`}
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <ActionIconButton
+                          action={u.active ? "deactivate" : "activate"}
                           onClick={() => handleToggleAtivo(u)}
-                        >
-                          {u.active ? "Desativar" : "Ativar"}
-                        </Button>
+                        />
 
-                        <Button
-                          size="sm"
-                          className="bg-yellow-500 hover:bg-yellow-400 text-black text-xs h-7 px-3"
+                        <ActionIconButton
+                          action="edit"
                           onClick={() => abrirFormEdicao(u)}
-                        >
-                          Editar
-                        </Button>
+                        />
                       </div>
                     </td>
                   </tr>
@@ -561,3 +567,4 @@ export default function UsuariosPage() {
     </div>
   );
 }
+

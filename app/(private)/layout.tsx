@@ -2,9 +2,12 @@
 
 import { useEffect } from "react";
 import { useRouter, usePathname } from "next/navigation";
+
 import { useAuth } from "@/context/AuthContext";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { AppHeader } from "@/components/layout/AppHeader";
+import { AppMobileNav } from "@/components/layout/AppMobileNav";
+import { PageLoadingState } from "@/components/layout/PageLoadingState";
 
 export default function PrivateLayout({
   children,
@@ -18,7 +21,6 @@ export default function PrivateLayout({
   useEffect(() => {
     if (loading) return;
 
-    // se não estiver logado, manda pro login
     if (!user) {
       router.replace("/login");
     }
@@ -26,21 +28,34 @@ export default function PrivateLayout({
 
   if (loading || !user) {
     return (
-      <div className="flex items-center justify-center h-screen bg-black text-yellow-400">
-        Carregando...
+      <div className="app-shell px-4 py-6 md:px-6">
+        <PageLoadingState
+          title="Carregando painel"
+          description="Estamos preparando os dados da sua operacao para abrir o sistema sem repetir cliques."
+          compact
+        />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex bg-black text-white">
-      <AppSidebar />
-      <div className="flex-1 flex flex-col">
-        <AppHeader />
-        <main className="flex-1 p-6 overflow-y-auto bg-neutral-950">
-          {children}
+    <div className="app-shell flex min-h-screen bg-transparent text-foreground">
+      <div className="hidden lg:block">
+        <AppSidebar />
+      </div>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <main className="flex-1 overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-[1600px] flex-1 px-4 py-4 md:px-6 md:py-5">
+            <div className="w-full space-y-6 pb-24 lg:pb-6">
+              <AppHeader />
+              {children}
+            </div>
+          </div>
         </main>
       </div>
+
+      <AppMobileNav />
     </div>
   );
 }

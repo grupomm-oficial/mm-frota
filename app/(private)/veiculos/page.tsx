@@ -1,16 +1,16 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { db } from "@/lib/firebase";
 import {
-  collection,
-  getDocs,
   addDoc,
-  query,
-  where,
-  updateDoc,
+  collection,
   deleteDoc,
   doc,
+  getDocs,
+  query,
+  updateDoc,
+  where,
 } from "firebase/firestore";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter } from "next/navigation";
@@ -18,16 +18,32 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import {
-  Truck,
-  Search,
-  Filter,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { MetricCard } from "@/components/layout/MetricCard";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { StatusBanner } from "@/components/layout/StatusBanner";
+import { ActionIconButton } from "@/components/ui/action-icon-button";
+import {
   Building2,
+  Filter,
+  Gauge,
+  PencilLine,
+  Route as RouteIcon,
+  Search,
+  Trash2,
+  Truck,
   UserCircle2,
   Wrench,
-  Route as RouteIcon,
 } from "lucide-react";
 
 type VehicleStatus = "disponivel" | "em_rota" | "manutencao";
+type StatusFilter = VehicleStatus | "todos";
 
 interface VehicleResponsibleUser {
   id: string;
@@ -40,9 +56,7 @@ interface Vehicle {
   plate: string;
   model: string;
   storeId: string;
-  // principal (primeiro responsável)
   responsibleUserName: string;
-  // novos campos
   responsibleUserIds: string[];
   responsibleUsers: VehicleResponsibleUser[];
   status: VehicleStatus;
@@ -56,88 +70,107 @@ interface SimpleUser {
   storeId: string;
 }
 
-type StatusFilter = VehicleStatus | "todos";
+function sortVehicles(list: Vehicle[]) {
+  return [...list].sort((a, b) => {
+    const storeCompare = (a.storeId || "").localeCompare(b.storeId || "");
+    if (storeCompare !== 0) return storeCompare;
+    return (a.plate || "").localeCompare(b.plate || "");
+  });
+}
+
+function formatKm(value?: number) {
+  return value != null ? `${value} km` : "-";
+}
+
+function getStatusBadgeClasses(status: VehicleStatus) {
+  if (status === "disponivel") {
+    return "border-emerald-500/35 bg-emerald-500/12 text-emerald-300";
+  }
+
+  if (status === "em_rota") {
+    return "border-sky-500/35 bg-sky-500/12 text-sky-300";
+  }
+
+  return "border-yellow-500/35 bg-yellow-500/12 text-yellow-300";
+}
+
+function getStatusLabel(status: VehicleStatus) {
+  if (status === "disponivel") return "Disponivel";
+  if (status === "em_rota") return "Em rota";
+  return "Manutencao";
+}
 
 export default function VeiculosPage() {
   const { user } = useAuth();
   const router = useRouter();
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [loading, setLoading] = useState(true);
-
   const [users, setUsers] = useState<SimpleUser[]>([]);
+  const [loading, setLoading] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deletingVehicle, setDeletingVehicle] = useState<Vehicle | null>(null);
+
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
-  // edição x criação
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
-
-  // campos formulário
   const [plate, setPlate] = useState("");
   const [model, setModel] = useState("");
   const [storeId, setStoreId] = useState("");
   const [responsibleIds, setResponsibleIds] = useState<string[]>([""]);
   const [currentKm, setCurrentKm] = useState("");
 
-  // filtros / busca
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("todos");
-  const [storeFilter, setStoreFilter] = useState<string>("todas");
+  const [storeFilter, setStoreFilter] = useState("todas");
 
   const isAdmin = user?.role === "admin";
 
-  // Se não estiver logado, manda pro login
   useEffect(() => {
     if (!user) {
       router.replace("/login");
-      return;
     }
-  }, [user, router]);
+  }, [router, user]);
 
-  // Carregar usuários e veículos
   useEffect(() => {
     async function loadData() {
+      if (!user) return;
+
       try {
         setLoading(true);
         setErrorMsg("");
 
-        // Admin vê todos os usuários para atribuir como responsável
-        if (user?.role === "admin") {
+        if (user.role === "admin") {
           const usersSnap = await getDocs(collection(db, "users"));
-          const usersList: SimpleUser[] = usersSnap.docs.map((d) => {
-            const data = d.data() as any;
+          const nextUsers: SimpleUser[] = usersSnap.docs.map((snapshot) => {
+            const data = snapshot.data() as any;
+
             return {
-              id: d.id,
+              id: snapshot.id,
               name: data.name,
               storeId: data.storeId,
             };
           });
-          setUsers(usersList);
+
+          setUsers(nextUsers);
         } else {
           setUsers([]);
         }
 
-        // Carregar veículos
-        let vehiclesSnap;
-        if (user?.role === "admin") {
-          // admin vê todos
-          vehiclesSnap = await getDocs(collection(db, "vehicles"));
-        } else {
-          // user vê só veículos que ele é responsável (novo campo array)
-          vehiclesSnap = await getDocs(
-            query(
-              collection(db, "vehicles"),
-              where("responsibleUserIds", "array-contains", user?.id ?? "")
-            )
-          );
-        }
+        const vehiclesSnap =
+          user.role === "admin"
+            ? await getDocs(collection(db, "vehicles"))
+            : await getDocs(
+                query(
+                  collection(db, "vehicles"),
+                  where("responsibleUserIds", "array-contains", user.id ?? "")
+                )
+              );
 
-        const vList: Vehicle[] = vehiclesSnap.docs.map((d) => {
-          const data = d.data() as any;
+        const nextVehicles = vehiclesSnap.docs.map((snapshot) => {
+          const data = snapshot.data() as any;
 
-          // compatibilidade: se já existirem arrays, usa; se não, converte do campo antigo
           const responsibleUsersFromDoc: VehicleResponsibleUser[] =
             Array.isArray(data.responsibleUsers) && data.responsibleUsers.length
               ? data.responsibleUsers
@@ -152,112 +185,128 @@ export default function VeiculosPage() {
               : [];
 
           const responsibleUserIdsFromDoc: string[] =
-            Array.isArray(data.responsibleUserIds) &&
-            data.responsibleUserIds.length
+            Array.isArray(data.responsibleUserIds) && data.responsibleUserIds.length
               ? data.responsibleUserIds
-              : responsibleUsersFromDoc.map((u) => u.id);
-
-          const primaryName =
-            data.responsibleUserName ||
-            (responsibleUsersFromDoc[0]?.name ?? "");
+              : responsibleUsersFromDoc.map((responsible) => responsible.id);
 
           return {
-            id: d.id,
+            id: snapshot.id,
             plate: data.plate,
             model: data.model,
             storeId: data.storeId,
-            responsibleUserName: primaryName,
+            responsibleUserName:
+              data.responsibleUserName || responsibleUsersFromDoc[0]?.name || "",
             responsibleUserIds: responsibleUserIdsFromDoc,
             responsibleUsers: responsibleUsersFromDoc,
             status: data.status ?? "disponivel",
             currentKm: data.currentKm,
             active: data.active ?? true,
-          };
+          } satisfies Vehicle;
         });
 
-        // ordena por loja + placa
-        vList.sort((a, b) => {
-          const s = (a.storeId || "").localeCompare(b.storeId || "");
-          if (s !== 0) return s;
-          return (a.plate || "").localeCompare(b.plate || "");
-        });
-
-        setVehicles(vList);
+        setVehicles(sortVehicles(nextVehicles));
       } catch (error) {
-        console.error("Erro ao carregar veículos:", error);
-        setErrorMsg("Erro ao carregar veículos. Tente novamente.");
+        console.error("Erro ao carregar veiculos:", error);
+        setErrorMsg("Erro ao carregar veiculos. Tente novamente.");
       } finally {
         setLoading(false);
       }
     }
 
-    if (user) {
-      loadData();
-    }
+    loadData();
   }, [user]);
 
-  function resetForm() {
+  function resetFormFields() {
     setPlate("");
     setModel("");
     setStoreId(user?.storeId ?? "");
     setResponsibleIds([""]);
     setCurrentKm("");
-    setErrorMsg("");
-    setSuccessMsg("");
     setEditingVehicle(null);
   }
 
-  function abrirFormNovo() {
-    resetForm();
+  function clearFeedback() {
+    setErrorMsg("");
+    setSuccessMsg("");
+  }
+
+  function closeVehicleDialog() {
+    setFormOpen(false);
+    setErrorMsg("");
+    resetFormFields();
+  }
+
+  function openNewVehicleDialog() {
+    clearFeedback();
+    resetFormFields();
+    setStoreId(user?.storeId ?? "");
     setFormOpen(true);
   }
 
-  function abrirFormEdicao(v: Vehicle) {
-    setEditingVehicle(v);
-    setPlate(v.plate);
-    setModel(v.model);
-    setStoreId(v.storeId);
+  function openEditVehicleDialog(vehicle: Vehicle) {
+    setEditingVehicle(vehicle);
+    setPlate(vehicle.plate);
+    setModel(vehicle.model);
+    setStoreId(vehicle.storeId);
     setResponsibleIds(
-      v.responsibleUserIds && v.responsibleUserIds.length
-        ? v.responsibleUserIds
-        : [""]
+      vehicle.responsibleUserIds.length ? vehicle.responsibleUserIds : [""]
     );
-    setCurrentKm(v.currentKm != null ? String(v.currentKm) : "");
+    setCurrentKm(vehicle.currentKm != null ? String(vehicle.currentKm) : "");
     setErrorMsg("");
     setSuccessMsg("");
     setFormOpen(true);
   }
 
-  function handleVerDetalhes(v: Vehicle) {
-    router.push(`/veiculos/${v.id}`);
+  function openDeleteVehicleDialog(vehicle: Vehicle) {
+    setDeletingVehicle(vehicle);
+    setErrorMsg("");
   }
 
-  // helpers para múltiplos responsáveis
+  function closeDeleteVehicleDialog() {
+    setDeletingVehicle(null);
+  }
+
+  function handleVerDetalhes(vehicle: Vehicle) {
+    router.push(`/veiculos/${vehicle.id}`);
+  }
+
   function addResponsibleField() {
-    setResponsibleIds((prev) => [...prev, ""]);
+    setResponsibleIds((previous) => [...previous, ""]);
   }
 
   function updateResponsibleField(index: number, value: string) {
-    setResponsibleIds((prev) => {
-      const copy = [...prev];
-      copy[index] = value;
-      return copy;
+    setResponsibleIds((previous) => {
+      const next = [...previous];
+      next[index] = value;
+      return next;
     });
   }
 
   function removeResponsibleField(index: number) {
-    setResponsibleIds((prev) => prev.filter((_, i) => i !== index));
+    setResponsibleIds((previous) => previous.filter((_, item) => item !== index));
   }
 
-  function getSelectedUsersFromForm(): SimpleUser[] {
+  function getSelectedUsersFromForm() {
     const uniqueIds = Array.from(
-      new Set(responsibleIds.filter((id) => id && id.trim() !== ""))
+      new Set(responsibleIds.filter((id) => id.trim() !== ""))
     );
-    const selectedUsers = uniqueIds
-      .map((id) => users.find((u) => u.id === id) || null)
-      .filter((u): u is SimpleUser => u !== null);
 
-    return selectedUsers;
+    return uniqueIds
+      .map((id) => users.find((userOption) => userOption.id === id) || null)
+      .filter((userOption): userOption is SimpleUser => userOption !== null);
+  }
+
+  function parseCurrentKmInput(value: string) {
+    if (value.trim() === "") {
+      return { hasValue: false, value: undefined as number | undefined };
+    }
+
+    const parsed = Number(value.replace(",", "."));
+
+    return {
+      hasValue: true,
+      value: Number.isFinite(parsed) ? parsed : undefined,
+    };
   }
 
   async function handleCreateVehicle() {
@@ -266,69 +315,79 @@ export default function VeiculosPage() {
       setSuccessMsg("");
       setSaving(true);
 
-      if (!plate || !model || !storeId) {
+      if (!plate.trim() || !model.trim() || !storeId.trim()) {
         setErrorMsg("Preencha placa, modelo e loja.");
+        return;
+      }
+
+      const normalizedPlate = plate.toUpperCase().trim();
+      const hasDuplicatePlate = vehicles.some(
+        (vehicle) => vehicle.plate.toUpperCase() === normalizedPlate
+      );
+
+      if (hasDuplicatePlate) {
+        setErrorMsg("Ja existe um veiculo cadastrado com essa placa.");
         return;
       }
 
       const selectedUsers = getSelectedUsersFromForm();
       if (!selectedUsers.length) {
-        setErrorMsg("Selecione pelo menos um responsável pelo veículo.");
+        setErrorMsg("Selecione pelo menos um responsavel pelo veiculo.");
         return;
       }
 
-      const kmNumber =
-        currentKm.trim() === "" ? undefined : Number(currentKm.replace(",", "."));
+      const parsedKm = parseCurrentKmInput(currentKm);
+      if (parsedKm.hasValue && parsedKm.value == null) {
+        setErrorMsg("Informe um KM valido.");
+        return;
+      }
 
-      const upperPlate = plate.toUpperCase().trim();
+      if ((parsedKm.value ?? 0) < 0) {
+        setErrorMsg("O KM nao pode ser negativo.");
+        return;
+      }
 
-      const responsibleUserIds = selectedUsers.map((u) => u.id);
-      const responsibleUsersForDoc = selectedUsers.map((u) => ({
-        id: u.id,
-        name: u.name,
-        storeId: u.storeId,
+      const responsibleUserIds = selectedUsers.map((item) => item.id);
+      const responsibleUsersForDoc = selectedUsers.map((item) => ({
+        id: item.id,
+        name: item.name,
+        storeId: item.storeId,
       }));
       const primaryResponsible = selectedUsers[0];
 
-      // Criar doc em "vehicles"
       const docRef = await addDoc(collection(db, "vehicles"), {
-        plate: upperPlate,
-        model,
-        storeId,
-        // novos campos
+        plate: normalizedPlate,
+        model: model.trim(),
+        storeId: storeId.trim(),
         responsibleUserIds,
         responsibleUsers: responsibleUsersForDoc,
-        // campos antigos (compatibilidade)
         responsibleUserId: primaryResponsible.id,
         responsibleUserName: primaryResponsible.name,
         status: "disponivel" as VehicleStatus,
-        currentKm: kmNumber,
+        currentKm: parsedKm.value,
         active: true,
       });
 
-      // Atualizar lista local
-      setVehicles((prev) => [
-        ...prev,
-        {
-          id: docRef.id,
-          plate: upperPlate,
-          model,
-          storeId,
-          responsibleUserIds,
-          responsibleUsers: responsibleUsersForDoc,
-          responsibleUserName: primaryResponsible.name,
-          status: "disponivel",
-          currentKm: kmNumber,
-          active: true,
-        },
-      ]);
+      const createdVehicle: Vehicle = {
+        id: docRef.id,
+        plate: normalizedPlate,
+        model: model.trim(),
+        storeId: storeId.trim(),
+        responsibleUserIds,
+        responsibleUsers: responsibleUsersForDoc,
+        responsibleUserName: primaryResponsible.name,
+        status: "disponivel",
+        currentKm: parsedKm.value,
+        active: true,
+      };
 
-      setSuccessMsg("Veículo cadastrado com sucesso!");
-      resetForm();
+      setVehicles((previous) => sortVehicles([...previous, createdVehicle]));
       setFormOpen(false);
+      resetFormFields();
+      setSuccessMsg("Veiculo cadastrado com sucesso.");
     } catch (error) {
-      console.error("Erro ao cadastrar veículo:", error);
-      setErrorMsg("Erro ao cadastrar veículo. Tente novamente.");
+      console.error("Erro ao cadastrar veiculo:", error);
+      setErrorMsg("Erro ao cadastrar veiculo. Tente novamente.");
     } finally {
       setSaving(false);
     }
@@ -342,545 +401,814 @@ export default function VeiculosPage() {
       setSuccessMsg("");
       setSaving(true);
 
-      if (!plate || !model || !storeId) {
+      if (!plate.trim() || !model.trim() || !storeId.trim()) {
         setErrorMsg("Preencha placa, modelo e loja.");
+        return;
+      }
+
+      const normalizedPlate = plate.toUpperCase().trim();
+      const hasDuplicatePlate = vehicles.some(
+        (vehicle) =>
+          vehicle.id !== editingVehicle.id &&
+          vehicle.plate.toUpperCase() === normalizedPlate
+      );
+
+      if (hasDuplicatePlate) {
+        setErrorMsg("Ja existe um veiculo cadastrado com essa placa.");
         return;
       }
 
       const selectedUsers = getSelectedUsersFromForm();
       if (!selectedUsers.length) {
-        setErrorMsg("Selecione pelo menos um responsável pelo veículo.");
+        setErrorMsg("Selecione pelo menos um responsavel pelo veiculo.");
         return;
       }
 
-      const kmNumber =
-        currentKm.trim() === "" ? null : Number(currentKm.replace(",", "."));
+      const parsedKm = parseCurrentKmInput(currentKm);
+      if (parsedKm.hasValue && parsedKm.value == null) {
+        setErrorMsg("Informe um KM valido.");
+        return;
+      }
 
-      const upperPlate = plate.toUpperCase().trim();
+      if ((parsedKm.value ?? 0) < 0) {
+        setErrorMsg("O KM nao pode ser negativo.");
+        return;
+      }
 
-      const responsibleUserIds = selectedUsers.map((u) => u.id);
-      const responsibleUsersForDoc = selectedUsers.map((u) => ({
-        id: u.id,
-        name: u.name,
-        storeId: u.storeId,
+      if (
+        parsedKm.value != null &&
+        editingVehicle.currentKm != null &&
+        parsedKm.value < editingVehicle.currentKm
+      ) {
+        setErrorMsg(
+          `O KM atual nao pode ser menor que ${editingVehicle.currentKm} km.`
+        );
+        return;
+      }
+
+      const responsibleUserIds = selectedUsers.map((item) => item.id);
+      const responsibleUsersForDoc = selectedUsers.map((item) => ({
+        id: item.id,
+        name: item.name,
+        storeId: item.storeId,
       }));
       const primaryResponsible = selectedUsers[0];
+      const kmValue = parsedKm.value ?? null;
 
       await updateDoc(doc(db, "vehicles", editingVehicle.id), {
-        plate: upperPlate,
-        model,
-        storeId,
+        plate: normalizedPlate,
+        model: model.trim(),
+        storeId: storeId.trim(),
         responsibleUserIds,
         responsibleUsers: responsibleUsersForDoc,
         responsibleUserId: primaryResponsible.id,
         responsibleUserName: primaryResponsible.name,
-        currentKm: kmNumber,
+        currentKm: kmValue,
       });
 
-      setVehicles((prev) =>
-        prev.map((v) =>
-          v.id === editingVehicle.id
-            ? {
-                ...v,
-                plate: upperPlate,
-                model,
-                storeId,
-                responsibleUserIds,
-                responsibleUsers: responsibleUsersForDoc,
-                responsibleUserName: primaryResponsible.name,
-                currentKm: kmNumber ?? undefined,
-              }
-            : v
+      setVehicles((previous) =>
+        sortVehicles(
+          previous.map((vehicle) =>
+            vehicle.id === editingVehicle.id
+              ? {
+                  ...vehicle,
+                  plate: normalizedPlate,
+                  model: model.trim(),
+                  storeId: storeId.trim(),
+                  responsibleUserIds,
+                  responsibleUsers: responsibleUsersForDoc,
+                  responsibleUserName: primaryResponsible.name,
+                  currentKm: kmValue ?? undefined,
+                }
+              : vehicle
+          )
         )
       );
 
-      setSuccessMsg("Veículo atualizado com sucesso!");
       setFormOpen(false);
-      setEditingVehicle(null);
+      resetFormFields();
+      setSuccessMsg("Veiculo atualizado com sucesso.");
     } catch (error) {
-      console.error("Erro ao atualizar veículo:", error);
-      setErrorMsg("Erro ao atualizar veículo. Tente novamente.");
+      console.error("Erro ao atualizar veiculo:", error);
+      setErrorMsg("Erro ao atualizar veiculo. Tente novamente.");
     } finally {
       setSaving(false);
     }
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+
     if (editingVehicle) {
       await handleUpdateVehicle();
-    } else {
-      await handleCreateVehicle();
+      return;
     }
+
+    await handleCreateVehicle();
   }
 
-  async function handleDeleteVehicle(v: Vehicle) {
-    if (!isAdmin) return;
-    const confirmar = window.confirm(
-      `Tem certeza que deseja excluir o veículo ${v.plate} (${v.model})?`
-    );
-    if (!confirmar) return;
+  async function confirmDeleteVehicle() {
+    if (!deletingVehicle) return;
 
     try {
-      await deleteDoc(doc(db, "vehicles", v.id));
-      setVehicles((prev) => prev.filter((item) => item.id !== v.id));
+      setErrorMsg("");
+      await deleteDoc(doc(db, "vehicles", deletingVehicle.id));
+      setVehicles((previous) =>
+        previous.filter((vehicle) => vehicle.id !== deletingVehicle.id)
+      );
+      setSuccessMsg(`Veiculo ${deletingVehicle.plate} excluido com sucesso.`);
+      closeDeleteVehicleDialog();
     } catch (error) {
-      console.error("Erro ao excluir veículo:", error);
-      setErrorMsg("Erro ao excluir veículo. Tente novamente.");
+      console.error("Erro ao excluir veiculo:", error);
+      setErrorMsg("Erro ao excluir veiculo. Tente novamente.");
     }
   }
 
-  // Opções de loja para filtro
   const storeOptions = useMemo(() => {
-    const set = new Set<string>();
-    vehicles.forEach((v) => {
-      if (v.storeId) set.add(v.storeId);
+    const stores = new Set<string>();
+    vehicles.forEach((vehicle) => {
+      if (vehicle.storeId) {
+        stores.add(vehicle.storeId);
+      }
     });
-    return Array.from(set).sort();
+    return Array.from(stores).sort();
   }, [vehicles]);
 
-  // Filtro/busca em memória
   const filteredVehicles = useMemo(() => {
-    let list = [...vehicles];
+    let nextList = [...vehicles];
 
-    // filtro por status
     if (statusFilter !== "todos") {
-      list = list.filter((v) => v.status === statusFilter);
+      nextList = nextList.filter((vehicle) => vehicle.status === statusFilter);
     }
 
-    // filtro por loja
     if (storeFilter !== "todas") {
-      list = list.filter((v) => v.storeId === storeFilter);
+      nextList = nextList.filter((vehicle) => vehicle.storeId === storeFilter);
     }
 
-    // busca por texto
     if (searchTerm.trim()) {
       const term = searchTerm.trim().toLowerCase();
-      list = list.filter((v) => {
-        const allNames = v.responsibleUsers
-          ?.map((u) => u.name)
+      nextList = nextList.filter((vehicle) => {
+        const responsibleNames = vehicle.responsibleUsers
+          .map((responsible) => responsible.name)
           .join(" ")
           .toLowerCase();
 
         return (
-          v.plate.toLowerCase().includes(term) ||
-          v.model.toLowerCase().includes(term) ||
-          (v.storeId || "").toLowerCase().includes(term) ||
-          (v.responsibleUserName || "").toLowerCase().includes(term) ||
-          (allNames || "").includes(term)
+          vehicle.plate.toLowerCase().includes(term) ||
+          vehicle.model.toLowerCase().includes(term) ||
+          vehicle.storeId.toLowerCase().includes(term) ||
+          vehicle.responsibleUserName.toLowerCase().includes(term) ||
+          responsibleNames.includes(term)
         );
       });
     }
 
-    return list;
-  }, [vehicles, searchTerm, statusFilter, storeFilter]);
+    return nextList;
+  }, [searchTerm, statusFilter, storeFilter, vehicles]);
 
-  // Métricas simples
   const totalVeiculos = vehicles.length;
-  const disponiveis = vehicles.filter((v) => v.status === "disponivel").length;
-  const emRota = vehicles.filter((v) => v.status === "em_rota").length;
-  const emManutencao = vehicles.filter((v) => v.status === "manutencao").length;
+  const disponiveis = vehicles.filter(
+    (vehicle) => vehicle.status === "disponivel"
+  ).length;
+  const emRota = vehicles.filter((vehicle) => vehicle.status === "em_rota").length;
+  const emManutencao = vehicles.filter(
+    (vehicle) => vehicle.status === "manutencao"
+  ).length;
+  const lojasAtivas = storeOptions.length;
+  const veiculosComKm = vehicles.filter(
+    (vehicle) => vehicle.currentKm != null
+  ).length;
+  const hasActiveFilters =
+    searchTerm.trim() || statusFilter !== "todos" || storeFilter !== "todas";
 
-  // helpers UI
   const statusChipClasses = (target: StatusFilter) =>
-    `px-3 py-1 rounded-full border text-xs cursor-pointer transition ${
+    `rounded-full border px-3 py-2 text-xs font-medium transition ${
       statusFilter === target
-        ? "bg-yellow-500 text-black border-yellow-400"
-        : "bg-neutral-900 text-gray-200 border-neutral-700 hover:bg-neutral-800"
+        ? "border-yellow-400 bg-yellow-400 text-black shadow-[0_0_0_1px_rgba(250,204,21,0.25)]"
+        : "border-slate-200 bg-white text-slate-600 hover:border-yellow-300 hover:text-slate-900 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300 dark:hover:border-yellow-400/35 dark:hover:bg-white/[0.08] dark:hover:text-white"
     }`;
 
   return (
-    <div className="space-y-6">
-      {/* Cabeçalho */}
-      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <div className="p-2 rounded-full bg-yellow-500/10">
-              <Truck className="w-5 h-5 text-yellow-400" />
-            </div>
-            <h1 className="text-2xl font-bold text-yellow-400">
-              Veículos do Grupo MM
-            </h1>
-          </div>
-          <p className="text-sm text-gray-400 max-w-xl">
-            Cadastre, gerencie e acompanhe os veículos da frota. Os detalhes
-            alimentam rotas, abastecimentos e relatórios mensais.
-          </p>
-        </div>
-
-        <div className="flex flex-col gap-2 md:items-end">
-          {/* Busca rápida */}
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <Input
-                placeholder="Buscar por placa, modelo, loja ou responsável..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-72 bg-neutral-900 border-neutral-700 text-gray-100 placeholder:text-gray-500 text-sm pr-9"
-              />
-              <Search className="w-4 h-4 text-gray-500 absolute right-2.5 top-1/2 -translate-y-1/2" />
-            </div>
-            {isAdmin && (
-              <Button
-                className="bg-yellow-500 hover:bg-yellow-400 text-black font-semibold text-sm"
-                onClick={abrirFormNovo}
-              >
-                + Novo veículo
-              </Button>
-            )}
-          </div>
-          {(searchTerm.trim() ||
-            statusFilter !== "todos" ||
-            storeFilter !== "todas") && (
-            <span className="text-[11px] text-gray-400">
-              Mostrando {filteredVehicles.length} de {totalVeiculos} veículo(s).
+    <div className="app-page">
+      <PageHeader
+        eyebrow="Gestao da frota"
+        title="Veiculos do Grupo MM"
+        description="Organize placa, loja, responsaveis e status da frota em uma tela mais clara para escritorio e operacao em campo."
+        icon={Truck}
+        badges={
+          <>
+            <span className="app-chip">
+              <span className="h-2 w-2 rounded-full bg-yellow-300" />
+              {totalVeiculos} veiculos monitorados
             </span>
-          )}
-        </div>
+            <span className="app-chip">
+              <span className="h-2 w-2 rounded-full bg-emerald-300" />
+              {disponiveis} disponiveis
+            </span>
+            <span className="app-chip border-sky-300/20 bg-sky-400/10 text-sky-100">
+              <span className="h-2 w-2 rounded-full bg-sky-300" />
+              {emRota} em rota
+            </span>
+          </>
+        }
+        actions={
+          isAdmin ? (
+            <Button onClick={openNewVehicleDialog}>+ Novo veiculo</Button>
+          ) : null
+        }
+      />
+
+      {errorMsg ? <StatusBanner tone="error">{errorMsg}</StatusBanner> : null}
+      {successMsg ? (
+        <StatusBanner tone="success">{successMsg}</StatusBanner>
+      ) : null}
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
+          label="Total"
+          value={String(totalVeiculos)}
+          helper="Veiculos registrados no sistema."
+          icon={Truck}
+        />
+        <MetricCard
+          label="Disponiveis"
+          value={String(disponiveis)}
+          helper="Prontos para nova saida."
+          icon={Truck}
+          accent="green"
+        />
+        <MetricCard
+          label="Em rota"
+          value={String(emRota)}
+          helper="Veiculos atualmente em operacao."
+          icon={RouteIcon}
+          accent="blue"
+        />
+        <MetricCard
+          label="Manutencao"
+          value={String(emManutencao)}
+          helper="Veiculos temporariamente indisponiveis."
+          icon={Wrench}
+          accent="yellow"
+        />
       </div>
 
-      {/* Resumo rápido + filtros de status/loja */}
-      <Card className="p-4 bg-neutral-950 border border-neutral-800 space-y-3">
-        {/* Chips resumo (clicáveis) */}
-        <div className="flex flex-wrap gap-3 text-xs text-gray-300">
-          <button
-            type="button"
-            className={statusChipClasses("todos")}
-            onClick={() => setStatusFilter("todos")}
-          >
-            Total:{" "}
-            <span className="font-semibold ml-1 text-yellow-400">
-              {totalVeiculos}
-            </span>
-          </button>
+      <Card className="app-panel-muted p-4 md:p-5">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                Filtros da frota
+              </p>
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                Busque por placa, modelo, loja ou responsavel e combine com
+                status para chegar mais rapido ao veiculo certo.
+              </p>
+            </div>
 
-          <button
-            type="button"
-            className={statusChipClasses("disponivel")}
-            onClick={() => setStatusFilter("disponivel")}
-          >
-            Disponíveis:{" "}
-            <span className="font-semibold ml-1 text-green-400">
-              {disponiveis}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            className={statusChipClasses("em_rota")}
-            onClick={() => setStatusFilter("em_rota")}
-          >
-            Em rota:{" "}
-            <span className="font-semibold ml-1 text-sky-400">
-              {emRota}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            className={statusChipClasses("manutencao")}
-            onClick={() => setStatusFilter("manutencao")}
-          >
-            Em manutenção:{" "}
-            <span className="font-semibold ml-1 text-yellow-300">
-              {emManutencao}
-            </span>
-          </button>
-        </div>
-
-        {/* Filtro por loja */}
-        <div className="flex flex-wrap items-center gap-3 text-xs text-gray-300">
-          <div className="flex items-center gap-2">
-            <Filter className="w-4 h-4 text-gray-500" />
-            <span className="text-[11px] text-gray-400">
-              Filtros rápidos
-            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-500 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
+                {filteredVehicles.length} veiculo(s) visiveis
+              </span>
+              <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-500 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
+                {lojasAtivas} loja(s)
+              </span>
+              <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-500 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
+                {veiculosComKm} com KM informado
+              </span>
+              {hasActiveFilters ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-9"
+                  onClick={() => {
+                    setSearchTerm("");
+                    setStatusFilter("todos");
+                    setStoreFilter("todas");
+                  }}
+                >
+                  Limpar filtros
+                </Button>
+              ) : null}
+            </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Building2 className="w-4 h-4 text-gray-500" />
-            <select
-              className="rounded-md bg-neutral-900 border border-neutral-700 px-3 py-1.5 text-xs text-gray-100"
-              value={storeFilter}
-              onChange={(e) => setStoreFilter(e.target.value)}
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1.35fr)_240px]">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <Input
+                placeholder="Buscar por placa, modelo, loja ou responsavel..."
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                className="app-field pl-10"
+              />
+            </div>
+
+            <div className="relative">
+              <Building2 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <select
+                className="app-select h-11 w-full pl-10"
+                value={storeFilter}
+                onChange={(event) => setStoreFilter(event.target.value)}
+              >
+                <option value="todas">Todas as lojas</option>
+                {storeOptions.map((store) => (
+                  <option key={store} value={store}>
+                    {store}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="mr-1 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+              <Filter className="h-4 w-4" />
+              Status
+            </div>
+
+            <button
+              type="button"
+              className={statusChipClasses("todos")}
+              onClick={() => setStatusFilter("todos")}
             >
-              <option value="todas">Todas as lojas</option>
-              {storeOptions.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
+              Todos
+            </button>
+            <button
+              type="button"
+              className={statusChipClasses("disponivel")}
+              onClick={() => setStatusFilter("disponivel")}
+            >
+              Disponiveis
+            </button>
+            <button
+              type="button"
+              className={statusChipClasses("em_rota")}
+              onClick={() => setStatusFilter("em_rota")}
+            >
+              Em rota
+            </button>
+            <button
+              type="button"
+              className={statusChipClasses("manutencao")}
+              onClick={() => setStatusFilter("manutencao")}
+            >
+              Manutencao
+            </button>
           </div>
         </div>
       </Card>
 
-      {/* Formulário (admin) */}
-      {isAdmin && formOpen && (
-        <Card className="p-4 bg-neutral-900 border border-neutral-800">
-          <div className="flex items-center justify-between mb-3">
+      <Card className="app-panel p-4 md:p-5">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
             <div className="flex items-center gap-2">
-              <Wrench className="w-4 h-4 text-yellow-400" />
-              <h2 className="text-lg font-semibold text-yellow-400">
-                {editingVehicle ? "Editar veículo" : "Novo veículo"}
+              <RouteIcon className="h-4 w-4 text-yellow-400" />
+              <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
+                Frota cadastrada
               </h2>
             </div>
-            {editingVehicle && (
-              <span className="text-[11px] px-2 py-[2px] rounded-full bg-neutral-800 border border-neutral-700 text-gray-300">
-                ID: {editingVehicle.id}
-              </span>
-            )}
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              Consulte detalhes, responsaveis e situacao atual de cada veiculo.
+            </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Input
-                placeholder="Placa (ex: ABC1D23)"
-                value={plate}
-                onChange={(e) => setPlate(e.target.value)}
-                className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
-              />
-              <Input
-                placeholder="Modelo (ex: Strada, Fiorino, etc.)"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
-              />
-              <Input
-                placeholder="Loja / unidade (ex: destack-cedral)"
-                value={storeId}
-                onChange={(e) => setStoreId(e.target.value)}
-                className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
-              />
-
-              <div className="md:col-span-1">
-                <label className="block text-xs text-gray-400 mb-1 flex items-center gap-1">
-                  <UserCircle2 className="w-3 h-3 text-gray-400" />
-                  Responsáveis pelo veículo
-                </label>
-                <div className="space-y-2">
-                  {responsibleIds.map((value, index) => (
-                    <div key={index} className="flex items-center gap-2">
-                      <select
-                        className="flex-1 rounded-md bg-neutral-950 border border-neutral-700 px-3 py-2 text-sm text-gray-100"
-                        value={value}
-                        onChange={(e) =>
-                          updateResponsibleField(index, e.target.value)
-                        }
-                      >
-                        <option value="">Selecione um usuário...</option>
-                        {users.map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {u.name} ({u.storeId})
-                          </option>
-                        ))}
-                      </select>
-
-                      {responsibleIds.length > 1 && (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="icon"
-                          className="border-red-500 text-red-300 hover:bg-red-500/10 h-8 w-8 text-xs"
-                          onClick={() => removeResponsibleField(index)}
-                        >
-                          -
-                        </Button>
-                      )}
-                    </div>
-                  ))}
-
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="border-neutral-700 text-gray-200 hover:bg-neutral-800 text-xs h-8 px-3"
-                    onClick={addResponsibleField}
-                  >
-                    + Adicionar responsável
-                  </Button>
-                </div>
-              </div>
-
-              <Input
-                placeholder="KM atual (opcional)"
-                value={currentKm}
-                onChange={(e) => setCurrentKm(e.target.value)}
-                className="bg-neutral-950 border-neutral-700 text-gray-100 placeholder:text-gray-500"
-              />
-            </div>
-
-            {errorMsg && (
-              <p className="text-sm text-red-400 font-medium">{errorMsg}</p>
-            )}
-            {successMsg && (
-              <p className="text-sm text-green-400 font-medium">
-                {successMsg}
-              </p>
-            )}
-
-            <div className="flex items-center gap-2 pt-2">
-              <Button
-                type="submit"
-                disabled={saving}
-                className="bg-yellow-500 hover:bg-yellow-400 text-black font-semibold"
-              >
-                {saving
-                  ? editingVehicle
-                    ? "Salvando alterações..."
-                    : "Salvando..."
-                  : editingVehicle
-                  ? "Salvar alterações"
-                  : "Salvar veículo"}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                className="border-neutral-700 text-gray-200 hover:bg-neutral-800 text-sm"
-                onClick={() => {
-                  setFormOpen(false);
-                  resetForm();
-                }}
-              >
-                Cancelar
-              </Button>
-            </div>
-          </form>
-        </Card>
-      )}
-
-      {/* Lista de veículos */}
-      <Card className="p-4 bg-neutral-900 border border-neutral-800">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <RouteIcon className="w-4 h-4 text-yellow-400" />
-            <h2 className="text-lg font-semibold text-gray-100">
-              Veículos cadastrados
-            </h2>
-          </div>
-          {!loading && (
-            <span className="text-[11px] text-gray-400">
-              {filteredVehicles.length} veículo(s) exibidos
+          {!loading ? (
+            <span className="text-xs uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+              {filteredVehicles.length} de {totalVeiculos} veiculos
             </span>
-          )}
+          ) : null}
         </div>
 
         {loading ? (
-          <p className="text-sm text-gray-400">Carregando veículos...</p>
-        ) : filteredVehicles.length === 0 ? (
-          <p className="text-sm text-gray-400">
-            Nenhum veículo encontrado com os filtros atuais.
-          </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="text-left border-b border-neutral-800 text-gray-400">
-                  <th className="py-2 pr-2">Placa</th>
-                  <th className="py-2 px-2">Modelo</th>
-                  <th className="py-2 px-2">Loja</th>
-                  <th className="py-2 px-2">Responsáveis</th>
-                  <th className="py-2 px-2">Status</th>
-                  <th className="py-2 px-2">KM atual</th>
-                  <th className="py-2 pl-2 text-right">Ações</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredVehicles.map((v) => (
-                  <tr
-                    key={v.id}
-                    className="border-b border-neutral-900 hover:bg-neutral-800/60"
-                  >
-                    <td className="py-2 pr-2 font-mono text-gray-100">
-                      {v.plate}
-                      {!v.active && (
-                        <span className="ml-2 text-[10px] px-2 py-[1px] rounded-full bg-neutral-800 text-gray-400 border border-neutral-700">
-                          Inativo
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-2 px-2 text-gray-200">{v.model}</td>
-                    <td className="py-2 px-2 text-gray-200">{v.storeId}</td>
-                    <td className="py-2 px-2 text-gray-200">
-                      {v.responsibleUsers && v.responsibleUsers.length > 0 ? (
-                        <div className="flex flex-col gap-0.5">
-                          <span>
-                            {v.responsibleUsers
-                              .map((u) => u.name)
-                              .join(" • ")}
-                          </span>
-                          {v.responsibleUsers.length > 1 && (
-                            <span className="text-[10px] text-gray-400">
-                              {v.responsibleUsers.length} responsáveis
-                            </span>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-gray-500 italic">
-                          Sem responsável
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-2 px-2">
-                      {v.status === "disponivel" && (
-                        <span className="px-2 py-1 rounded-full text-[11px] font-semibold bg-green-500/20 text-green-300 border border-green-500/40">
-                          Disponível
-                        </span>
-                      )}
-                      {v.status === "em_rota" && (
-                        <span className="px-2 py-1 rounded-full text-[11px] font-semibold bg-sky-500/20 text-sky-300 border border-sky-500/40">
-                          Em rota
-                        </span>
-                      )}
-                      {v.status === "manutencao" && (
-                        <span className="px-2 py-1 rounded-full text-[11px] font-semibold bg-yellow-500/20 text-yellow-300 border border-yellow-500/40">
-                          Manutenção
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-2 px-2 text-gray-200">
-                      {v.currentKm != null ? `${v.currentKm} km` : "-"}
-                    </td>
-
-                    <td className="py-2 pl-2 text-right">
-                      <div className="flex justify-end gap-2">
-                        {/* Detalhes – disponível para TODOS os perfis */}
-                        <Button
-                          size="sm"
-                          className="bg-neutral-800 hover:bg-neutral-700 text-yellow-300 border border-yellow-500/40 text-xs h-7 px-3"
-                          onClick={() => handleVerDetalhes(v)}
-                        >
-                          Detalhes
-                        </Button>
-
-                        {/* Ações extras apenas para admin */}
-                        {isAdmin && (
-                          <>
-                            <Button
-                              size="sm"
-                              className="bg-yellow-500 hover:bg-yellow-400 text-black text-xs h-7 px-3"
-                              onClick={() => abrirFormEdicao(v)}
-                            >
-                              Editar
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="border-red-500 text-red-300 hover:bg-red-500/10 text-xs h-7 px-3"
-                              onClick={() => handleDeleteVehicle(v)}
-                            >
-                              Excluir
-                            </Button>
-                          </>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="rounded-3xl border border-slate-200 bg-white px-5 py-10 text-center text-sm text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400">
+            Carregando veiculos...
           </div>
+        ) : filteredVehicles.length === 0 ? (
+          <div className="rounded-3xl border border-dashed border-slate-300 bg-white px-5 py-10 text-center dark:border-white/10 dark:bg-white/[0.03]">
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+              Nenhum veiculo encontrado com os filtros atuais.
+            </p>
+            {hasActiveFilters ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-4"
+                onClick={() => {
+                  setSearchTerm("");
+                  setStatusFilter("todos");
+                  setStoreFilter("todas");
+                }}
+              >
+                Limpar filtros
+              </Button>
+            ) : null}
+          </div>
+        ) : (
+          <>
+            <div className="space-y-3 md:hidden">
+              {filteredVehicles.map((vehicle) => (
+                <div
+                  key={vehicle.id}
+                  className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/[0.04]"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-mono text-sm font-semibold text-slate-900 dark:text-white">
+                        {vehicle.plate}
+                      </p>
+                      <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">
+                        {vehicle.model}
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        {vehicle.storeId}
+                      </p>
+                    </div>
+
+                    <span
+                      className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${getStatusBadgeClasses(
+                        vehicle.status
+                      )}`}
+                    >
+                      {getStatusLabel(vehicle.status)}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+                      <p className="uppercase tracking-[0.18em] text-slate-500 dark:text-slate-500">
+                        Responsaveis
+                      </p>
+                      <p className="mt-2 text-sm leading-6 text-slate-700 dark:text-slate-200">
+                        {vehicle.responsibleUsers.length
+                          ? vehicle.responsibleUsers
+                              .map((responsible) => responsible.name)
+                              .join(", ")
+                          : "Sem responsavel"}
+                      </p>
+                    </div>
+
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+                      <p className="uppercase tracking-[0.18em] text-slate-500 dark:text-slate-500">
+                        KM atual
+                      </p>
+                      <p className="mt-2 text-sm text-slate-700 dark:text-slate-200">
+                        {formatKm(vehicle.currentKm)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <ActionIconButton
+                      action="view"
+                      onClick={() => handleVerDetalhes(vehicle)}
+                    />
+
+                    {isAdmin ? (
+                      <>
+                        <ActionIconButton
+                          action="edit"
+                          onClick={() => openEditVehicleDialog(vehicle)}
+                        />
+                        <ActionIconButton
+                          action="delete"
+                          onClick={() => openDeleteVehicleDialog(vehicle)}
+                        />
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="hidden overflow-x-auto md:block">
+              <table className="min-w-[920px] w-full border-collapse text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-left text-slate-500 dark:border-white/10 dark:text-slate-400">
+                    <th className="py-3 pr-3 font-medium">Placa</th>
+                    <th className="px-3 py-3 font-medium">Modelo</th>
+                    <th className="px-3 py-3 font-medium">Loja</th>
+                    <th className="px-3 py-3 font-medium">Responsaveis</th>
+                    <th className="px-3 py-3 font-medium">Status</th>
+                    <th className="px-3 py-3 font-medium">KM atual</th>
+                    <th className="py-3 pl-3 text-right font-medium">Acoes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredVehicles.map((vehicle) => (
+                    <tr
+                      key={vehicle.id}
+                      className="border-b border-slate-200/80 transition hover:bg-slate-50 dark:border-white/10 dark:hover:bg-white/[0.03]"
+                    >
+                      <td className="py-4 pr-3 align-top">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-sm font-semibold text-slate-900 dark:text-white">
+                            {vehicle.plate}
+                          </span>
+                          {!vehicle.active ? (
+                            <span className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-slate-500 dark:border-white/10 dark:bg-white/[0.05] dark:text-slate-400">
+                              Inativo
+                            </span>
+                          ) : null}
+                        </div>
+                      </td>
+
+                      <td className="px-3 py-4 align-top text-slate-700 dark:text-slate-200">
+                        {vehicle.model}
+                      </td>
+
+                      <td className="px-3 py-4 align-top text-slate-700 dark:text-slate-200">
+                        {vehicle.storeId}
+                      </td>
+
+                      <td className="px-3 py-4 align-top text-slate-700 dark:text-slate-200">
+                        {vehicle.responsibleUsers.length ? (
+                          <div className="flex flex-col gap-1">
+                            <span>
+                              {vehicle.responsibleUsers
+                                .map((responsible) => responsible.name)
+                                .join(" | ")}
+                            </span>
+                            {vehicle.responsibleUsers.length > 1 ? (
+                              <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                                {vehicle.responsibleUsers.length} responsaveis
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <span className="italic text-slate-400 dark:text-slate-500">
+                            Sem responsavel
+                          </span>
+                        )}
+                      </td>
+
+                      <td className="px-3 py-4 align-top">
+                        <span
+                          className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold ${getStatusBadgeClasses(
+                            vehicle.status
+                          )}`}
+                        >
+                          {getStatusLabel(vehicle.status)}
+                        </span>
+                      </td>
+
+                      <td className="px-3 py-4 align-top text-slate-700 dark:text-slate-200">
+                        {formatKm(vehicle.currentKm)}
+                      </td>
+
+                      <td className="py-4 pl-3 align-top">
+                        <div className="flex flex-wrap justify-end gap-2">
+                          <ActionIconButton
+                            action="view"
+                            onClick={() => handleVerDetalhes(vehicle)}
+                          />
+
+                          {isAdmin ? (
+                            <>
+                              <ActionIconButton
+                                action="edit"
+                                onClick={() => openEditVehicleDialog(vehicle)}
+                              />
+                              <ActionIconButton
+                                action="delete"
+                                onClick={() => openDeleteVehicleDialog(vehicle)}
+                              />
+                            </>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </Card>
+
+      {isAdmin ? (
+        <Dialog
+          open={formOpen}
+          onOpenChange={(open) => {
+            if (!open) {
+              closeVehicleDialog();
+            }
+          }}
+        >
+          <DialogContent className="max-h-[calc(100vh-2rem)] max-w-3xl overflow-hidden border-blue-100 bg-white p-0 dark:border-yellow-400/10 dark:bg-[#08080a]">
+            <form
+              onSubmit={handleSubmit}
+              className="flex max-h-[calc(100vh-2rem)] flex-col"
+            >
+              <DialogHeader className="shrink-0 border-b border-border px-6 py-5">
+                <DialogTitle className="flex items-center gap-2 text-slate-950 dark:text-white">
+                  {editingVehicle ? (
+                    <PencilLine className="h-5 w-5 text-yellow-500" />
+                  ) : (
+                    <Truck className="h-5 w-5 text-yellow-500" />
+                  )}
+                  {editingVehicle ? "Editar veiculo" : "Novo veiculo"}
+                </DialogTitle>
+                <DialogDescription>
+                  Preencha os dados principais da frota e mantenha responsaveis,
+                  loja e quilometragem atualizados.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                      Placa
+                    </label>
+                    <Input
+                      placeholder="Ex: ABC1D23"
+                      value={plate}
+                      onChange={(event) => setPlate(event.target.value)}
+                      className="app-field"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                      Modelo
+                    </label>
+                    <Input
+                      placeholder="Ex: Strada, Fiorino, Saveiro"
+                      value={model}
+                      onChange={(event) => setModel(event.target.value)}
+                      className="app-field"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                      Loja
+                    </label>
+                    <Input
+                      placeholder="Ex: destack-cedral"
+                      value={storeId}
+                      onChange={(event) => setStoreId(event.target.value)}
+                      className="app-field"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                      <Gauge className="h-3.5 w-3.5" />
+                      KM atual
+                    </label>
+                    <Input
+                      placeholder="Opcional"
+                      value={currentKm}
+                      onChange={(event) => setCurrentKm(event.target.value)}
+                      className="app-field"
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-[28px] border border-slate-200 bg-slate-50/90 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+                  <div className="flex flex-col gap-1">
+                    <p className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-white">
+                      <UserCircle2 className="h-4 w-4 text-yellow-500" />
+                      Responsaveis pelo veiculo
+                    </p>
+                    <p className="text-sm text-slate-500 dark:text-slate-400">
+                      Defina quem pode operar ou acompanhar este veiculo no
+                      sistema.
+                    </p>
+                  </div>
+
+                  <div className="mt-4 space-y-3">
+                    {responsibleIds.map((value, index) => (
+                      <div key={`${value}-${index}`} className="flex gap-2">
+                        <select
+                          className="app-select h-11 flex-1"
+                          value={value}
+                          onChange={(event) =>
+                            updateResponsibleField(index, event.target.value)
+                          }
+                        >
+                          <option value="">Selecione um usuario...</option>
+                          {users.map((userOption) => (
+                            <option key={userOption.id} value={userOption.id}>
+                              {userOption.name} ({userOption.storeId})
+                            </option>
+                          ))}
+                        </select>
+
+                        {responsibleIds.length > 1 ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="icon"
+                            className="h-11 w-11 border-red-500/35 text-red-200 hover:bg-red-500/10"
+                            onClick={() => removeResponsibleField(index)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        ) : null}
+                      </div>
+                    ))}
+
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-10"
+                      onClick={addResponsibleField}
+                    >
+                      + Adicionar responsavel
+                    </Button>
+                  </div>
+                </div>
+
+                {editingVehicle ? (
+                  <div className="rounded-[24px] border border-slate-200 bg-slate-50/90 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+                    <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                      Registro em edicao
+                    </p>
+                    <p className="mt-2 text-sm text-slate-700 dark:text-slate-200">
+                      ID do veiculo: {editingVehicle.id}
+                    </p>
+                  </div>
+                ) : null}
+
+                {errorMsg ? (
+                  <div className="rounded-2xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                    {errorMsg}
+                  </div>
+                ) : null}
+              </div>
+
+              <DialogFooter className="shrink-0 border-t border-border bg-white px-6 py-4 dark:bg-[#08080a]">
+                <Button type="button" variant="destructive" onClick={closeVehicleDialog}>
+                  Cancelar
+                </Button>
+                <Button type="submit" disabled={saving}>
+                  {saving
+                    ? editingVehicle
+                      ? "Salvando alteracoes..."
+                      : "Salvando veiculo..."
+                    : editingVehicle
+                    ? "Salvar alteracoes"
+                    : "Salvar veiculo"}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      ) : null}
+
+      <Dialog
+        open={!!deletingVehicle}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeDeleteVehicleDialog();
+          }
+        }}
+      >
+        <DialogContent className="max-w-xl border-blue-100 bg-white dark:border-yellow-400/10 dark:bg-[#08080a]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-slate-950 dark:text-white">
+              <Trash2 className="h-5 w-5 text-red-500" />
+              Excluir veiculo
+            </DialogTitle>
+            <DialogDescription>
+              Esta acao remove o veiculo do cadastro principal. Use apenas quando
+              tiver certeza de que ele nao deve mais fazer parte da frota.
+            </DialogDescription>
+          </DialogHeader>
+
+          {deletingVehicle ? (
+            <div className="rounded-[24px] border border-slate-200 bg-slate-50/90 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+              <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                {deletingVehicle.plate} | {deletingVehicle.model}
+              </p>
+              <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+                Loja: {deletingVehicle.storeId}
+              </p>
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                Status atual: {getStatusLabel(deletingVehicle.status)}
+              </p>
+            </div>
+          ) : null}
+
+          <DialogFooter>
+            <Button type="button" variant="destructive" onClick={closeDeleteVehicleDialog}>
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={confirmDeleteVehicle}
+            >
+              Excluir veiculo
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
