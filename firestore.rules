@@ -1,0 +1,310 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ============================
+    // Helpers basicos
+    // ============================
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function hasCurrentUserDoc() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function currentUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return hasCurrentUserDoc() &&
+        currentUserData().role == "admin";
+    }
+
+    function userStoreId() {
+      return hasCurrentUserDoc() ? currentUserData().storeId : null;
+    }
+
+    function hasStore(data) {
+      return data.keys().hasAny(["storeId"]) &&
+        data.storeId is string &&
+        data.storeId != "";
+    }
+
+    function isSameStore(data) {
+      return hasStore(data) &&
+        userStoreId() == data.storeId;
+    }
+
+    function hasResponsibleId(data) {
+      return data.keys().hasAny(["responsibleUserId"]) &&
+        data.responsibleUserId is string;
+    }
+
+    function hasResponsibleIds(data) {
+      return data.keys().hasAny(["responsibleUserIds"]) &&
+        data.responsibleUserIds is list;
+    }
+
+    function isResponsibleIn(data) {
+      return isSignedIn() && (
+        (
+          hasResponsibleId(data) &&
+          data.responsibleUserId == request.auth.uid
+        ) ||
+        (
+          hasResponsibleIds(data) &&
+          data.responsibleUserIds.hasAny([request.auth.uid])
+        )
+      );
+    }
+
+    function hasVehicleId(data) {
+      return data.keys().hasAny(["vehicleId"]) &&
+        data.vehicleId is string &&
+        data.vehicleId != "";
+    }
+
+    function linkedVehicleExists(data) {
+      return hasVehicleId(data) &&
+        exists(/databases/$(database)/documents/vehicles/$(data.vehicleId));
+    }
+
+    function linkedVehicleData(data) {
+      return get(/databases/$(database)/documents/vehicles/$(data.vehicleId)).data;
+    }
+
+    function canOperateLinkedVehicle(data) {
+      return isSignedIn() &&
+        linkedVehicleExists(data) &&
+        (
+          isAdmin() ||
+          isResponsibleIn(linkedVehicleData(data))
+        );
+    }
+
+    function matchesLinkedVehicleStore(data) {
+      return hasStore(data) &&
+        linkedVehicleExists(data) &&
+        linkedVehicleData(data).keys().hasAny(["storeId"]) &&
+        linkedVehicleData(data).storeId == data.storeId;
+    }
+
+    // ============================
+    // Helpers de update restrito
+    // ============================
+
+    function vehicleOperationalUpdateOnly() {
+      let changed = request.resource.data.diff(resource.data).changedKeys();
+      return changed.hasOnly([
+        "status",
+        "currentKm",
+        "vehicleNotes",
+        "updatedVehicleNotesAt",
+        "updatedVehicleNotesById",
+        "updatedVehicleNotesByName"
+      ]) &&
+        (
+          !changed.hasAny(["updatedVehicleNotesById"]) ||
+          request.resource.data.updatedVehicleNotesById == request.auth.uid
+        );
+    }
+
+    function routeOperationalUpdateOnly() {
+      let changed = request.resource.data.diff(resource.data).changedKeys();
+      return changed.hasOnly([
+        "endKm",
+        "endAt",
+        "distanceKm",
+        "status",
+        "destino",
+        "observacoes",
+        "finishedAt",
+        "finishedById",
+        "finishedByName",
+        "canceledAt",
+        "canceledById",
+        "canceledByName",
+        "cancelReason",
+        "updatedObsAt",
+        "updatedObsById",
+        "updatedObsByName"
+      ]) &&
+        (
+          !changed.hasAny(["finishedById"]) ||
+          request.resource.data.finishedById == request.auth.uid
+        ) &&
+        (
+          !changed.hasAny(["canceledById"]) ||
+          request.resource.data.canceledById == request.auth.uid
+        ) &&
+        (
+          !changed.hasAny(["updatedObsById"]) ||
+          request.resource.data.updatedObsById == request.auth.uid
+        );
+    }
+
+    function maintenanceCompletionUpdateOnly() {
+      let changed = request.resource.data.diff(resource.data).changedKeys();
+      return changed.hasOnly([
+        "status",
+        "endKm",
+        "endDate"
+      ]);
+    }
+
+    // ============================
+    // USERS
+    // ============================
+    match /users/{userId} {
+      allow read: if isSelf(userId) || isAdmin();
+
+      allow create, delete: if isAdmin();
+
+      allow update: if isAdmin() || (
+        isSelf(userId) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          "mustChangePassword"
+        ])
+      );
+    }
+
+    // ============================
+    // USERNAMES
+    // ============================
+    match /usernames/{username} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ============================
+    // VEHICLES
+    // - leitura segue aberta para logados porque varias telas
+    //   ainda carregam a colecao inteira e filtram no client.
+    // - escrita operacional liberada so para admin ou responsavel.
+    // ============================
+    match /vehicles/{vehicleId} {
+      allow read: if isSignedIn();
+
+      allow create, delete: if isAdmin();
+
+      allow update: if isAdmin() || (
+        isResponsibleIn(resource.data) &&
+        vehicleOperationalUpdateOnly()
+      );
+    }
+
+    // ============================
+    // DRIVERS
+    // - leitura compartilhada por loja
+    // - admin gerencia tudo
+    // - responsavel da mesma loja pode criar/editar nome e status
+    // ============================
+    match /drivers/{driverId} {
+      allow read: if isAdmin() ||
+        isSameStore(resource.data) ||
+        (isResponsibleIn(resource.data) && isSameStore(resource.data));
+
+      allow create: if isAdmin() || (
+        isResponsibleIn(request.resource.data) &&
+        isSameStore(request.resource.data)
+      );
+
+      allow update: if isAdmin() || (
+        isResponsibleIn(resource.data) &&
+        isSameStore(resource.data) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          "name",
+          "active"
+        ])
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    // ============================
+    // ROUTES
+    // - leitura mantida para qualquer logado por compatibilidade
+    // - criacao exige usuario responsavel e vinculo com veiculo permitido
+    // - update comum cobre finalizar, cancelar e observacoes
+    // ============================
+    match /routes/{routeId} {
+      allow read: if isSignedIn();
+
+      allow create: if isAdmin() || (
+        isResponsibleIn(request.resource.data) &&
+        canOperateLinkedVehicle(request.resource.data) &&
+        matchesLinkedVehicleStore(request.resource.data)
+      );
+
+      allow update: if isAdmin() || (
+        routeOperationalUpdateOnly() &&
+        (
+          isResponsibleIn(resource.data) ||
+          canOperateLinkedVehicle(resource.data)
+        )
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    // ============================
+    // FUELINGS
+    // - leitura mantida aberta para logados por compatibilidade
+    // - criacao exige vinculo com veiculo permitido
+    // - edicao/exclusao seguem admin-only como no front atual
+    // ============================
+    match /fuelings/{fuelingId} {
+      allow read: if isSignedIn();
+
+      allow create: if isAdmin() || (
+        isResponsibleIn(request.resource.data) &&
+        canOperateLinkedVehicle(request.resource.data) &&
+        matchesLinkedVehicleStore(request.resource.data)
+      );
+
+      allow update, delete: if isAdmin();
+    }
+
+    // ============================
+    // MAINTENANCES
+    // - leitura mantida aberta para logados por compatibilidade
+    // - criacao exige vinculo com veiculo permitido
+    // - update comum cobre conclusao de manutencao
+    // ============================
+    match /maintenances/{maintenanceId} {
+      allow read: if isSignedIn();
+
+      allow create: if isAdmin() || (
+        isResponsibleIn(request.resource.data) &&
+        canOperateLinkedVehicle(request.resource.data) &&
+        matchesLinkedVehicleStore(request.resource.data)
+      );
+
+      allow update: if isAdmin() || (
+        maintenanceCompletionUpdateOnly() &&
+        (
+          isResponsibleIn(resource.data) ||
+          canOperateLinkedVehicle(resource.data)
+        )
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    // ============================
+    // MONTHLY SUMMARIES
+    // ============================
+    match /monthlySummaries/{summaryId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+  }
+}

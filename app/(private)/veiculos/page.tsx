@@ -354,6 +354,7 @@ export default function VeiculosPage() {
         storeId: item.storeId,
       }));
       const primaryResponsible = selectedUsers[0];
+      const kmValue = parsedKm.value ?? null;
 
       const docRef = await addDoc(collection(db, "vehicles"), {
         plate: normalizedPlate,
@@ -364,7 +365,7 @@ export default function VeiculosPage() {
         responsibleUserId: primaryResponsible.id,
         responsibleUserName: primaryResponsible.name,
         status: "disponivel" as VehicleStatus,
-        currentKm: parsedKm.value,
+        currentKm: kmValue,
         active: true,
       });
 
@@ -377,7 +378,7 @@ export default function VeiculosPage() {
         responsibleUsers: responsibleUsersForDoc,
         responsibleUserName: primaryResponsible.name,
         status: "disponivel",
-        currentKm: parsedKm.value,
+        currentKm: kmValue ?? undefined,
         active: true,
       };
 
