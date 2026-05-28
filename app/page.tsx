@@ -13,7 +13,7 @@ export default function HomePage() {
     if (loading) return;
 
     if (user) {
-      router.replace("/dashboard");
+      router.replace(user.mustChangePassword ? "/nova-senha" : "/rotas");
     } else {
       router.replace("/login");
     }

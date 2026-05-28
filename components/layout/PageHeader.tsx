@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 interface PageHeaderProps {
   eyebrow?: string;
   title: string;
-  description: string;
+  description?: string;
   icon?: LucideIcon;
   iconTone?: "blue" | "yellow" | "slate";
   actions?: ReactNode;
@@ -34,37 +34,45 @@ export function PageHeader({
   className,
 }: PageHeaderProps) {
   return (
-    <section className={cn("app-panel app-fade-up p-5 md:p-6", className)}>
-      <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-        <div className="max-w-3xl space-y-3">
-          {eyebrow ? <p className="app-kicker">{eyebrow}</p> : null}
+    <section className={cn("app-panel app-fade-up relative overflow-hidden p-5 md:p-6", className)}>
+      <div className="absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-blue-400/60 to-transparent dark:via-yellow-300/55" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(37,99,235,0.07),transparent_26%)] dark:bg-[radial-gradient(circle_at_top_right,rgba(250,204,21,0.08),transparent_24%)]" />
 
-          <div className="flex items-start gap-3">
+      <div className="relative grid gap-5 2xl:grid-cols-[minmax(0,1fr)_auto] 2xl:items-start">
+        <div className="min-w-0 max-w-4xl space-y-4">
+          {eyebrow ? (
+            <div className="flex items-center gap-3">
+              <p className="app-kicker">{eyebrow}</p>
+              <div className="app-hairline max-w-[120px]" />
+            </div>
+          ) : null}
+
+          <div className="flex items-start gap-3.5 md:gap-4">
             {Icon ? (
               <div
                 className={cn(
-                  "flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border",
+                  "flex h-11 w-11 shrink-0 items-center justify-center rounded-[20px] border md:h-12 md:w-12",
                   iconToneClasses[iconTone]
                 )}
               >
-                <Icon className="h-5 w-5" />
+                <Icon className="h-[18px] w-[18px]" />
               </div>
             ) : null}
 
-            <div className="space-y-2">
+            <div className="min-w-0 space-y-2">
               <h1 className="app-title">{title}</h1>
-              <p className="app-subtitle max-w-2xl">{description}</p>
+              {description ? (
+                <p className="app-subtitle max-w-2xl text-sm leading-6 line-clamp-2">
+                  {description}
+                </p>
+              ) : null}
             </div>
           </div>
 
-          {badges ? <div className="flex flex-wrap gap-2 pt-1">{badges}</div> : null}
+          {badges ? <div className="flex flex-wrap gap-2">{badges}</div> : null}
         </div>
 
-        {actions ? (
-          <div className="flex w-full flex-wrap items-center gap-2 xl:w-auto xl:justify-end">
-            {actions}
-          </div>
-        ) : null}
+        {actions ? <div className="app-action-surface 2xl:w-auto">{actions}</div> : null}
       </div>
     </section>
   );

@@ -108,7 +108,7 @@ export function ActionIconButton({
       className={cn(
         iconOnly
           ? "shrink-0 rounded-xl"
-          : "min-h-9 min-w-[110px] shrink-0 rounded-xl px-3.5 font-semibold",
+          : "min-h-9 min-w-[124px] shrink-0 rounded-xl px-3.5 font-semibold",
         meta.className,
         className
       )}

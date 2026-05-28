@@ -80,20 +80,20 @@
   --sidebar-border: oklch(0.91 0.008 258);
   --sidebar-ring: oklch(0.56 0.16 252 / 35%);
 
-  --app-shell-grid: rgba(15, 23, 42, 0.03);
-  --app-panel-bg: rgba(255, 255, 255, 0.92);
-  --app-panel-muted-bg: rgba(248, 250, 252, 0.9);
-  --app-panel-border: rgba(250, 204, 21, 0.18);
-  --app-panel-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
-  --app-panel-shadow-soft: 0 12px 28px rgba(15, 23, 42, 0.05);
+  --app-shell-grid: rgba(15, 23, 42, 0.022);
+  --app-panel-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94));
+  --app-panel-muted-bg: linear-gradient(180deg, rgba(250, 251, 253, 0.96), rgba(255, 255, 255, 0.92));
+  --app-panel-border: rgba(148, 163, 184, 0.18);
+  --app-panel-shadow: 0 20px 48px rgba(15, 23, 42, 0.07);
+  --app-panel-shadow-soft: 0 12px 30px rgba(15, 23, 42, 0.05);
   --app-field-bg: rgba(255, 255, 255, 0.96);
   --app-field-border: rgba(148, 163, 184, 0.24);
   --app-chip-bg: rgba(255, 255, 255, 0.9);
-  --app-chip-border: rgba(250, 204, 21, 0.22);
+  --app-chip-border: rgba(148, 163, 184, 0.18);
   --app-table-head: rgba(241, 245, 249, 0.96);
   --app-table-hover: rgba(37, 99, 235, 0.04);
   --app-subtitle: #475569;
-  --app-kicker: #ca8a04;
+  --app-kicker: #2563eb;
 }
 
 .dark {
@@ -129,16 +129,16 @@
   --sidebar-border: oklch(0.3 0.01 258 / 80%);
   --sidebar-ring: oklch(0.66 0.14 252 / 55%);
 
-  --app-shell-grid: rgba(255, 255, 255, 0.012);
-  --app-panel-bg: rgba(8, 8, 10, 0.9);
-  --app-panel-muted-bg: rgba(13, 13, 15, 0.92);
-  --app-panel-border: rgba(250, 204, 21, 0.16);
+  --app-shell-grid: rgba(255, 255, 255, 0.01);
+  --app-panel-bg: linear-gradient(180deg, rgba(8, 10, 14, 0.96), rgba(11, 13, 18, 0.98));
+  --app-panel-muted-bg: linear-gradient(180deg, rgba(11, 13, 18, 0.92), rgba(15, 18, 24, 0.97));
+  --app-panel-border: rgba(148, 163, 184, 0.14);
   --app-panel-shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
   --app-panel-shadow-soft: 0 16px 36px rgba(0, 0, 0, 0.34);
   --app-field-bg: rgba(10, 10, 12, 0.92);
   --app-field-border: rgba(255, 255, 255, 0.08);
   --app-chip-bg: rgba(10, 10, 12, 0.82);
-  --app-chip-border: rgba(250, 204, 21, 0.18);
+  --app-chip-border: rgba(148, 163, 184, 0.18);
   --app-table-head: rgba(255, 255, 255, 0.04);
   --app-table-hover: rgba(255, 255, 255, 0.04);
   --app-subtitle: #cbd5e1;
@@ -158,16 +158,16 @@
     @apply bg-background text-foreground font-sans antialiased;
     min-height: 100vh;
     background-image:
-      radial-gradient(circle at top left, rgba(250, 204, 21, 0.18), transparent 24%),
-      radial-gradient(circle at top right, rgba(59, 130, 246, 0.08), transparent 18%),
-      linear-gradient(180deg, #ffffff, #f8fafc);
+      radial-gradient(circle at top left, rgba(59, 130, 246, 0.1), transparent 24%),
+      radial-gradient(circle at top right, rgba(15, 23, 42, 0.035), transparent 20%),
+      linear-gradient(180deg, #f8fafc, #f2f6fb 52%, #f8fafc);
     background-attachment: fixed;
   }
 
   .dark body {
     background-image:
-      radial-gradient(circle at top center, rgba(250, 204, 21, 0.12), transparent 22%),
-      linear-gradient(180deg, rgba(4, 4, 5, 0.98), rgba(10, 10, 12, 1));
+      radial-gradient(circle at top center, rgba(37, 99, 235, 0.1), transparent 26%),
+      linear-gradient(180deg, rgba(5, 7, 10, 0.98), rgba(11, 13, 18, 1));
   }
 
   ::selection {
@@ -178,8 +178,12 @@
 
 @layer components {
   .app-page {
-    @apply space-y-6 md:space-y-7;
+    @apply space-y-5 md:space-y-6;
     animation: app-enter 320ms ease-out;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: clip;
   }
 
   .app-shell {
@@ -194,19 +198,19 @@
     background-image:
       linear-gradient(var(--app-shell-grid) 1px, transparent 1px),
       linear-gradient(90deg, var(--app-shell-grid) 1px, transparent 1px);
-    background-size: 28px 28px;
+    background-size: 32px 32px;
     mask-image: radial-gradient(circle at center, black 48%, transparent 100%);
   }
 
   .app-panel {
-    @apply rounded-[28px] border backdrop-blur-xl;
+    @apply rounded-[30px] border backdrop-blur-xl;
     background: var(--app-panel-bg);
     border-color: var(--app-panel-border);
     box-shadow: var(--app-panel-shadow);
   }
 
   .app-panel-muted {
-    @apply rounded-[24px] border backdrop-blur-lg;
+    @apply rounded-[26px] border backdrop-blur-lg;
     background: var(--app-panel-muted-bg);
     border-color: var(--app-panel-border);
     box-shadow: var(--app-panel-shadow-soft);
@@ -218,7 +222,8 @@
   }
 
   .app-title {
-    @apply text-2xl font-semibold tracking-tight text-slate-950 dark:text-white md:text-3xl;
+    @apply text-[1.8rem] font-semibold tracking-tight text-slate-950 dark:text-white md:text-[2.35rem];
+    overflow-wrap: anywhere;
   }
 
   .app-subtitle {
@@ -227,18 +232,21 @@
   }
 
   .app-chip {
-    @apply inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-medium transition;
+    @apply inline-flex items-center gap-2 whitespace-nowrap rounded-full border px-3 py-1.5 text-[11px] font-medium transition;
     background: var(--app-chip-bg);
     border-color: var(--app-chip-border);
     color: var(--app-subtitle);
     box-shadow: 0 8px 22px rgba(250, 204, 21, 0.08);
+    overflow-wrap: normal;
+    word-break: normal;
   }
 
   .app-table-wrap {
-    @apply overflow-hidden rounded-[24px] border;
+    @apply max-w-full overflow-x-auto rounded-[24px] border;
     background: var(--app-panel-bg);
     border-color: var(--app-panel-border);
     box-shadow: var(--app-panel-shadow-soft);
+    scrollbar-gutter: stable;
   }
 
   .app-table {
@@ -259,7 +267,7 @@
   }
 
   .app-table th {
-    @apply px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.18em];
+    @apply px-3 py-3 text-left text-[10px] font-semibold uppercase tracking-[0.2em];
   }
 
   .app-table td {
@@ -298,6 +306,305 @@
     @apply h-px w-full bg-gradient-to-r from-transparent via-slate-300/70 to-transparent dark:via-white/10;
   }
 
+  .app-toolbar-shell {
+    @apply overflow-hidden rounded-[26px] border p-4 backdrop-blur-lg md:p-5;
+    background: var(--app-panel-muted-bg);
+    border-color: var(--app-panel-border);
+    box-shadow: var(--app-panel-shadow-soft);
+  }
+
+  .app-toolbar-head {
+    @apply flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between;
+  }
+
+  .app-toolbar-title {
+    @apply text-base font-semibold tracking-tight text-slate-950 dark:text-white;
+  }
+
+  .app-toolbar-copy {
+    @apply text-sm text-slate-500 dark:text-slate-400;
+  }
+
+  .app-toolbar-grid {
+    @apply grid gap-3 md:grid-cols-2 xl:grid-cols-4;
+  }
+
+  .app-inline-stat {
+    @apply rounded-[20px] border px-3.5 py-3 text-sm shadow-sm;
+    background: rgba(255, 255, 255, 0.82);
+    border-color: rgba(148, 163, 184, 0.16);
+  }
+
+  .dark .app-inline-stat {
+    background: rgba(15, 23, 42, 0.26);
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+
+  .app-inline-stat-label {
+    @apply text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400;
+  }
+
+  .app-inline-stat-value {
+    @apply mt-1 text-lg font-semibold tracking-tight text-slate-950 dark:text-white;
+  }
+
+  .app-action-surface {
+    @apply flex w-full flex-col gap-2 overflow-hidden rounded-[26px] border p-2 backdrop-blur-lg sm:flex-row sm:flex-wrap sm:items-center sm:justify-end;
+    background: var(--app-panel-muted-bg);
+    border-color: var(--app-panel-border);
+    box-shadow: var(--app-panel-shadow-soft);
+  }
+
+  .app-action-surface > [data-slot="button"] {
+    @apply w-full justify-center sm:w-auto;
+  }
+
+  .app-dialog-actions {
+    @apply flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end;
+  }
+
+  .app-dialog-actions > [data-slot="button"] {
+    @apply w-full sm:w-auto sm:min-w-[132px];
+  }
+
+  .app-shell-loading {
+    @apply relative flex min-h-screen bg-transparent text-foreground;
+  }
+
+  .route-transition-overlay {
+    @apply fixed inset-0 z-[80] flex items-center justify-center px-4 backdrop-blur-md;
+    animation: route-loader-enter 180ms ease-out;
+    background:
+      radial-gradient(circle at 50% 36%, rgba(59, 130, 246, 0.16), transparent 28%),
+      rgba(248, 250, 252, 0.76);
+  }
+
+  .dark .route-transition-overlay {
+    background:
+      radial-gradient(circle at 50% 36%, rgba(250, 204, 21, 0.12), transparent 30%),
+      rgba(2, 6, 23, 0.72);
+  }
+
+  .car-loader {
+    @apply flex w-full max-w-xl flex-col items-center justify-center gap-6 rounded-[30px] px-5 py-7;
+  }
+
+  .car-loader-compact {
+    @apply max-w-md border border-slate-200/70 bg-white/86 shadow-[0_28px_70px_rgba(15,23,42,0.16)] dark:border-white/10 dark:bg-slate-950/82 dark:shadow-[0_28px_80px_rgba(0,0,0,0.36)];
+  }
+
+  .car-loader-scene {
+    @apply relative h-[150px] w-full max-w-[420px] overflow-hidden rounded-[28px] border border-slate-200/80 bg-[linear-gradient(180deg,rgba(239,246,255,0.98),rgba(255,255,255,0.88))] shadow-[inset_0_1px_0_rgba(255,255,255,0.9)] dark:border-white/10 dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.7),rgba(2,6,23,0.92))];
+  }
+
+  .car-loader-scene::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at 22% 24%, rgba(59, 130, 246, 0.12), transparent 22%),
+      radial-gradient(circle at 78% 18%, rgba(250, 204, 21, 0.16), transparent 20%);
+    pointer-events: none;
+  }
+
+  .car-loader-skyline {
+    @apply absolute inset-x-6 bottom-[56px] flex items-end justify-between opacity-70;
+  }
+
+  .car-loader-skyline span {
+    @apply block rounded-t-lg bg-slate-200/80 dark:bg-white/10;
+    width: 22%;
+  }
+
+  .car-loader-skyline span:nth-child(1) {
+    height: 34px;
+  }
+
+  .car-loader-skyline span:nth-child(2) {
+    height: 50px;
+  }
+
+  .car-loader-skyline span:nth-child(3) {
+    height: 28px;
+  }
+
+  .car-loader-skyline span:nth-child(4) {
+    height: 44px;
+  }
+
+  .car-loader-road {
+    @apply absolute inset-x-0 bottom-0 h-[58px] overflow-hidden bg-[linear-gradient(180deg,rgba(15,23,42,0.88),rgba(15,23,42,0.98))] dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.9),rgba(2,6,23,1))];
+  }
+
+  .car-loader-road::before {
+    content: "";
+    position: absolute;
+    inset-x: 0;
+    top: 8px;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.16);
+  }
+
+  .car-loader-road-line {
+    position: absolute;
+    left: -36%;
+    top: 29px;
+    height: 3px;
+    width: 32%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, transparent, rgba(250, 204, 21, 0.92), transparent);
+    animation: car-road-line 760ms linear infinite;
+  }
+
+  .car-loader-road-line-delay {
+    animation-delay: 380ms;
+  }
+
+  .car-loader-vehicle {
+    position: absolute;
+    left: 50%;
+    bottom: 33px;
+    width: 154px;
+    height: 72px;
+    transform: translateX(-50%);
+    animation: car-drive 1.25s ease-in-out infinite;
+  }
+
+  .car-loader-vehicle-glow {
+    position: absolute;
+    inset: auto -22px 8px -22px;
+    height: 28px;
+    border-radius: 999px;
+    background: rgba(37, 99, 235, 0.16);
+    filter: blur(16px);
+  }
+
+  .dark .car-loader-vehicle-glow {
+    background: rgba(250, 204, 21, 0.16);
+  }
+
+  .car-loader-vehicle-body {
+    @apply absolute left-2 right-2 rounded-[22px] border border-blue-200 bg-[linear-gradient(135deg,#2563eb,#0f172a)] shadow-[0_18px_38px_rgba(15,23,42,0.24)] dark:border-yellow-300/30 dark:bg-[linear-gradient(135deg,#facc15,#1e293b)];
+    top: 18px;
+    height: 38px;
+  }
+
+  .car-loader-vehicle-top {
+    @apply absolute rounded-t-[22px] border border-blue-200 bg-[linear-gradient(135deg,#60a5fa,#2563eb)] dark:border-yellow-300/30 dark:bg-[linear-gradient(135deg,#fde68a,#f59e0b)];
+    left: 32px;
+    top: -22px;
+    height: 28px;
+    width: 72px;
+  }
+
+  .car-loader-window {
+    position: absolute;
+    top: -15px;
+    height: 15px;
+    border-radius: 8px 8px 3px 3px;
+    background: rgba(255, 255, 255, 0.78);
+  }
+
+  .car-loader-window-front {
+    left: 76px;
+    width: 28px;
+    transform: skewX(18deg);
+  }
+
+  .car-loader-window-back {
+    left: 43px;
+    width: 28px;
+    transform: skewX(-14deg);
+  }
+
+  .car-loader-light {
+    @apply absolute rounded-full;
+    top: 14px;
+    height: 10px;
+    width: 10px;
+  }
+
+  .car-loader-light-front {
+    right: -2px;
+    background: #fef3c7;
+    box-shadow: 10px 0 22px rgba(250, 204, 21, 0.5);
+  }
+
+  .car-loader-light-back {
+    left: 2px;
+    background: #ef4444;
+  }
+
+  .car-loader-icon {
+    @apply absolute left-1/2 top-1/2 h-7 w-7 -translate-x-1/2 -translate-y-1/2 text-white opacity-90 dark:text-slate-950;
+  }
+
+  .car-loader-wheel {
+    position: absolute;
+    bottom: 0;
+    height: 28px;
+    width: 28px;
+    border: 6px solid #0f172a;
+    border-top-color: #64748b;
+    border-radius: 999px;
+    background: #e2e8f0;
+    animation: car-wheel-spin 560ms linear infinite;
+  }
+
+  .dark .car-loader-wheel {
+    border-color: #020617;
+    border-top-color: #facc15;
+    background: #cbd5e1;
+  }
+
+  .car-loader-wheel-left {
+    left: 32px;
+  }
+
+  .car-loader-wheel-right {
+    right: 28px;
+  }
+
+  .car-loader-shadow {
+    position: absolute;
+    left: 18px;
+    right: 18px;
+    bottom: -8px;
+    height: 16px;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.26);
+    filter: blur(8px);
+    animation: car-shadow 1.25s ease-in-out infinite;
+  }
+
+  .app-skeleton-block {
+    @apply animate-pulse rounded-[24px] border border-slate-200/80 bg-white/80 dark:border-white/8 dark:bg-white/[0.04];
+  }
+
+  .app-empty-state {
+    @apply rounded-[26px] border border-dashed px-5 py-10 text-center;
+    background: rgba(255, 255, 255, 0.72);
+    border-color: rgba(148, 163, 184, 0.22);
+  }
+
+  .dark .app-empty-state {
+    background: rgba(255, 255, 255, 0.03);
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+
+  .app-list-card {
+    @apply min-w-0 max-w-full rounded-[24px] border p-4;
+    background: rgba(255, 255, 255, 0.82);
+    border-color: rgba(148, 163, 184, 0.18);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+  }
+
+  .dark .app-list-card {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.08);
+    box-shadow: none;
+  }
+
   .app-hover-lift {
     @apply transition duration-200 ease-out;
   }
@@ -327,7 +634,7 @@
   }
 
   .app-mobile-safe {
-    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.75rem);
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.35rem);
   }
 }
 
@@ -353,6 +660,68 @@
   }
 }
 
+@keyframes route-loader-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes car-road-line {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(430%);
+  }
+}
+
+@keyframes car-drive {
+  0%,
+  100% {
+    transform: translateX(-50%) translateY(0);
+  }
+  45% {
+    transform: translateX(-50%) translateY(-4px);
+  }
+  70% {
+    transform: translateX(-50%) translateY(1px);
+  }
+}
+
+@keyframes car-wheel-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes car-shadow {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: scaleX(1);
+  }
+  45% {
+    opacity: 0.45;
+    transform: scaleX(0.86);
+  }
+}
+
+.fleet-progress-shine {
+  animation: fleet-progress-shine 2.8s ease-in-out infinite;
+}
+
+@keyframes fleet-progress-shine {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .app-page,
   .app-fade-up,
@@ -363,6 +732,18 @@
 
   .app-hover-lift:hover {
     transform: none;
+  }
+
+  .fleet-progress-shine {
+    animation: none;
+  }
+
+  .route-transition-overlay,
+  .car-loader-road-line,
+  .car-loader-vehicle,
+  .car-loader-wheel,
+  .car-loader-shadow {
+    animation: none;
   }
 }
 
@@ -405,6 +786,14 @@ html:not(.dark) .hover\:bg-neutral-800:hover {
   background-color: rgba(37, 99, 235, 0.04) !important;
 }
 
+html:not(.dark) .app-chip.text-sky-100 {
+  color: #0369a1 !important;
+}
+
+html:not(.dark) .app-chip.text-emerald-200 {
+  color: #047857 !important;
+}
+
 html:not(.dark) [data-report-page] .bg-slate-950\/80,
 html:not(.dark) [data-report-page] .bg-slate-950\/70,
 html:not(.dark) [data-report-page] .bg-slate-950\/40,
@@ -427,4 +816,74 @@ html:not(.dark) [data-report-page] .text-slate-300 {
 html:not(.dark) [data-report-page] .text-slate-400,
 html:not(.dark) [data-report-page] .text-slate-500 {
   color: #64748b !important;
+}
+
+/* Page content should read as one workspace, with sections distributed by spacing. */
+.app-page .app-panel,
+.app-page .app-panel-muted,
+.app-page .app-toolbar-shell,
+.app-page .app-action-surface,
+.app-page .app-table-wrap {
+  max-width: 100%;
+  min-width: 0;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.app-page .app-panel,
+.app-page .app-panel-muted,
+.app-page .app-toolbar-shell {
+  border-radius: 0;
+}
+
+.app-page .app-action-surface {
+  padding: 0;
+}
+
+.app-page .app-inline-stat {
+  background: transparent;
+  border: 0;
+  border-left: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.dark .app-page .app-inline-stat {
+  background: transparent;
+  border-left-color: rgba(255, 255, 255, 0.1);
+}
+
+.app-page .app-hover-lift:hover {
+  transform: none;
+}
+
+.app-page > *,
+.app-page :where(.grid, .flex, [data-slot="card"]) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.app-page :where(.app-panel, .app-panel-muted, .app-toolbar-shell) > * {
+  min-width: 0;
+}
+
+.app-page .app-table {
+  max-width: 100%;
+}
+
+.app-page .app-table :where(th, td) {
+  overflow-wrap: anywhere;
+}
+
+.app-page :where(.rounded-full, .app-chip) {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.app-page :where(span.rounded-full, a.rounded-full, button.rounded-full, .app-chip),
+.app-page .app-table :where(.rounded-full, .app-chip) {
+  white-space: nowrap;
 }

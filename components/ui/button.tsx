@@ -5,18 +5,18 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-2xl text-sm font-medium transition-all duration-200 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-busy:cursor-wait aria-busy:opacity-90 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/60 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive shadow-[0_10px_22px_rgba(250,204,21,0.16)]",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-2xl text-sm font-medium transition-all duration-200 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-busy:cursor-wait aria-busy:opacity-90 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/60 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive",
   {
     variants: {
       variant: {
         default:
-          "border border-yellow-400/30 bg-yellow-400 text-slate-950 hover:-translate-y-0.5 hover:bg-yellow-300 hover:shadow-[0_14px_30px_rgba(250,204,21,0.24)]",
+          "border border-blue-600/15 bg-slate-950 text-white shadow-[0_12px_28px_rgba(15,23,42,0.16)] hover:-translate-y-0.5 hover:bg-slate-900 dark:border-white/10 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-100",
         destructive:
           "border border-red-300/20 bg-destructive text-white hover:-translate-y-0.5 hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/60",
         outline:
-          "border border-border bg-white text-slate-700 shadow-none hover:-translate-y-0.5 hover:border-yellow-400/45 hover:bg-yellow-50 hover:text-yellow-700 dark:bg-input/30 dark:text-slate-100 dark:hover:border-yellow-400/30 dark:hover:bg-yellow-400/10 dark:hover:text-yellow-200",
+          "border border-border bg-white text-slate-700 shadow-none hover:-translate-y-0.5 hover:border-blue-300/50 hover:bg-blue-50 hover:text-blue-700 dark:bg-input/30 dark:text-slate-100 dark:hover:border-blue-400/25 dark:hover:bg-blue-500/10 dark:hover:text-blue-100",
         secondary:
-          "border border-yellow-400/30 bg-yellow-100 text-yellow-900 hover:-translate-y-0.5 hover:bg-yellow-200 dark:bg-yellow-400/12 dark:text-yellow-100 dark:hover:bg-yellow-400/18",
+          "border border-blue-100 bg-blue-50 text-blue-700 shadow-[0_10px_24px_rgba(37,99,235,0.08)] hover:-translate-y-0.5 hover:border-blue-200 hover:bg-blue-100 dark:border-blue-400/20 dark:bg-blue-500/12 dark:text-blue-100 dark:hover:bg-blue-500/18",
         ghost:
           "hover:bg-accent hover:text-accent-foreground shadow-none dark:hover:bg-accent/50",
         link: "text-primary underline-offset-4 hover:underline",

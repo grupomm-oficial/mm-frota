@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -7,12 +7,13 @@ import {
   getDocs,
   orderBy,
   query,
-  where,
 } from "firebase/firestore";
+import type { LucideIcon } from "lucide-react";
 import {
   Activity,
   AlertTriangle,
   ArrowRight,
+  ShieldCheck,
   Car,
   Clock3,
   CircleDollarSign,
@@ -45,7 +46,21 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
+import {
+  getNumberValue,
+  getOptionalNumberValue,
+  getOptionalStringValue,
+  getStringArrayValue,
+  getStringValue,
+  toFirestoreRecord,
+} from "@/lib/firestore-fields";
+import {
+  getDriverDocsForUserByStores,
+  getRecordDocsForUserByVehicles,
+  getVehicleDocsForUser,
+} from "@/lib/firestore-access";
 import { db } from "@/lib/firebase";
+import { normalizeStoreKey } from "@/lib/store-utils";
 import { cn } from "@/lib/utils";
 
 interface VehicleResponsibleUser {
@@ -53,7 +68,6 @@ interface VehicleResponsibleUser {
   name: string;
   storeId?: string;
 }
-
 interface Vehicle {
   id: string;
   plate: string;
@@ -69,8 +83,11 @@ interface Vehicle {
 
 interface RouteItem {
   id: string;
+  vehicleId: string;
   vehiclePlate: string;
   vehicleModel: string;
+  storeId: string;
+  responsibleUserId: string;
   driverName: string;
   origem?: string | null;
   destino?: string | null;
@@ -78,14 +95,16 @@ interface RouteItem {
   startAt?: string | null;
   endAt?: string | null;
   distanceKm?: number | null;
-  status: "em_andamento" | "finalizada";
+  status: "em_andamento" | "finalizada" | "cancelada";
 }
 
 interface Fueling {
   id: string;
+  vehicleId: string;
   vehiclePlate: string;
   vehicleModel: string;
   storeId: string;
+  responsibleUserId: string;
   date: string;
   liters: number;
   pricePerL: number;
@@ -94,9 +113,11 @@ interface Fueling {
 
 interface Maintenance {
   id: string;
+  vehicleId: string;
   vehiclePlate: string;
   vehicleModel: string;
   storeId: string;
+  responsibleUserId: string;
   date: string;
   type: string;
   cost: number;
@@ -124,6 +145,201 @@ interface DashboardAlert {
   href: string;
   actionLabel: string;
   tone: "danger" | "warning" | "info";
+}
+
+interface DashboardQuickAction {
+  id: string;
+  title: string;
+  description: string;
+  href: string;
+  icon: LucideIcon;
+}
+
+interface DashboardFocusItem {
+  id: string;
+  label: string;
+  value: string;
+  helper: string;
+  icon: LucideIcon;
+  accent: "yellow" | "blue" | "green" | "red" | "slate";
+}
+
+interface DashboardUserScope {
+  id: string;
+  role?: string;
+  storeId?: string | null;
+}
+
+function parseResponsibleUsers(data: Record<string, unknown>) {
+  if (Array.isArray(data.responsibleUsers) && data.responsibleUsers.length > 0) {
+    return data.responsibleUsers
+      .map<VehicleResponsibleUser | null>((item) => {
+        const responsible = toFirestoreRecord(item);
+        const id = getStringValue(responsible.id);
+        const name = getStringValue(responsible.name);
+        const storeId = getOptionalStringValue(responsible.storeId) ?? undefined;
+
+        if (!id || !name) return null;
+
+        return {
+          id,
+          name,
+          ...(storeId ? { storeId } : {}),
+        };
+      })
+      .filter((item): item is VehicleResponsibleUser => item != null);
+  }
+
+  const responsibleUserId = getOptionalStringValue(data.responsibleUserId);
+  const responsibleUserName = getOptionalStringValue(data.responsibleUserName);
+
+  if (!responsibleUserId || !responsibleUserName) {
+    return [];
+  }
+
+  return [
+    {
+      id: responsibleUserId,
+      name: responsibleUserName,
+      storeId: getOptionalStringValue(data.storeId) ?? undefined,
+    },
+  ];
+}
+
+function parseVehicle(id: string, value: unknown): Vehicle {
+  const data = toFirestoreRecord(value);
+  const responsibleUsers = parseResponsibleUsers(data);
+  const responsibleUserIds =
+    getStringArrayValue(data.responsibleUserIds) ??
+    responsibleUsers.map((responsibleUser) => responsibleUser.id);
+
+  return {
+    id,
+    plate: getStringValue(data.plate),
+    model: getStringValue(data.model),
+    storeId: getStringValue(data.storeId),
+    status:
+      data.status === "em_rota" || data.status === "manutencao"
+        ? data.status
+        : "disponivel",
+    currentKm: getOptionalNumberValue(data.currentKm) ?? undefined,
+    responsibleUserId: getOptionalStringValue(data.responsibleUserId) ?? undefined,
+    responsibleUserName:
+      getOptionalStringValue(data.responsibleUserName) ??
+      responsibleUsers[0]?.name,
+    responsibleUserIds,
+    responsibleUsers,
+  };
+}
+
+function parseRoute(id: string, value: unknown): RouteItem {
+  const data = toFirestoreRecord(value);
+  const rawStatus = getStringValue(data.status);
+
+  return {
+    id,
+    vehicleId: getStringValue(data.vehicleId),
+    vehiclePlate: getStringValue(data.vehiclePlate),
+    vehicleModel: getStringValue(data.vehicleModel),
+    storeId: getStringValue(data.storeId),
+    responsibleUserId: getStringValue(data.responsibleUserId),
+    driverName: getStringValue(data.driverName),
+    origem: getOptionalStringValue(data.origem),
+    destino: getOptionalStringValue(data.destino),
+    startKm: getNumberValue(data.startKm),
+    startAt: getOptionalStringValue(data.startAt),
+    endAt: getOptionalStringValue(data.endAt),
+    distanceKm: getOptionalNumberValue(data.distanceKm),
+    status:
+      rawStatus === "finalizada" || rawStatus === "cancelada"
+        ? rawStatus
+        : "em_andamento",
+  };
+}
+
+function parseFueling(id: string, value: unknown): Fueling {
+  const data = toFirestoreRecord(value);
+
+  return {
+    id,
+    vehicleId: getStringValue(data.vehicleId),
+    vehiclePlate: getStringValue(data.vehiclePlate),
+    vehicleModel: getStringValue(data.vehicleModel),
+    storeId: getStringValue(data.storeId),
+    responsibleUserId: getStringValue(data.responsibleUserId),
+    date: getStringValue(data.date),
+    liters: getNumberValue(data.liters),
+    pricePerL: getNumberValue(data.pricePerL),
+    total: getNumberValue(data.total),
+  };
+}
+
+function parseMaintenance(id: string, value: unknown): Maintenance {
+  const data = toFirestoreRecord(value);
+
+  return {
+    id,
+    vehicleId: getStringValue(data.vehicleId),
+    vehiclePlate: getStringValue(data.vehiclePlate),
+    vehicleModel: getStringValue(data.vehicleModel),
+    storeId: getStringValue(data.storeId),
+    responsibleUserId: getStringValue(data.responsibleUserId),
+    date: getStringValue(data.date),
+    type: getStringValue(data.type),
+    cost: getNumberValue(data.cost),
+    status: data.status === "concluida" ? "concluida" : "em_andamento",
+  };
+}
+
+function parseDriver(id: string, value: unknown): Driver {
+  const data = toFirestoreRecord(value);
+
+  return {
+    id,
+    name: getStringValue(data.name),
+    storeId: getStringValue(data.storeId),
+    responsibleUserId: getStringValue(data.responsibleUserId),
+  };
+}
+
+function canUserUseVehicle(
+  user: DashboardUserScope | null | undefined,
+  vehicle: Vehicle
+) {
+  if (!user) return false;
+  if (user.role === "admin") return true;
+
+  return (
+    vehicle.responsibleUserId === user.id ||
+    vehicle.responsibleUserIds.includes(user.id)
+  );
+}
+
+function normalizeScopeValue(value?: string | null) {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function canUserAccessRecord(
+  user: DashboardUserScope | null | undefined,
+  options: {
+    allowedVehicleIds: Set<string>;
+    responsibleUserId?: string;
+    storeId?: string;
+    vehicleId?: string;
+  }
+) {
+  if (!user) return false;
+  if (user.role === "admin") return true;
+
+  if (options.responsibleUserId && options.responsibleUserId === user.id) {
+    return true;
+  }
+
+  if (options.vehicleId && options.allowedVehicleIds.has(options.vehicleId)) {
+    return true;
+  }
+
+  return false;
 }
 
 const currencyFormatter = new Intl.NumberFormat("pt-BR", {
@@ -205,6 +421,23 @@ function getDaysSince(value?: string | null) {
   return Math.max(0, Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60 * 24)));
 }
 
+function isInRelativeMonth(dateStr: string | null | undefined, offset = 0) {
+  if (!dateStr) return false;
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return false;
+  const now = new Date();
+  const reference = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+
+  return (
+    date.getFullYear() === reference.getFullYear() &&
+    date.getMonth() === reference.getMonth()
+  );
+}
+
+function isInCurrentMonth(dateStr?: string | null) {
+  return isInRelativeMonth(dateStr, 0);
+}
+
 function TrendChip({
   comparison,
   higherIsBetter = true,
@@ -276,6 +509,7 @@ export default function DashboardPage() {
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
+  const [showExtendedInsights, setShowExtendedInsights] = useState(false);
   const [costChartMode, setCostChartMode] = useState<"split" | "total">("split");
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [routes, setRoutes] = useState<RouteItem[]>([]);
@@ -297,175 +531,119 @@ export default function DashboardPage() {
       try {
         setLoading(true);
         setErrorMsg("");
-
-        let vehiclesSnap;
-        if (isAdmin) {
-          vehiclesSnap = await getDocs(collection(db, "vehicles"));
-        } else {
-          vehiclesSnap = await getDocs(
-            query(
-              collection(db, "vehicles"),
-              where("responsibleUserIds", "array-contains", user.id)
-            )
-          );
-        }
-
-        const vList: Vehicle[] = vehiclesSnap.docs.map((doc) => {
-          const data = doc.data() as any;
-          const responsibleUsersFromDoc: VehicleResponsibleUser[] =
-            Array.isArray(data.responsibleUsers) && data.responsibleUsers.length
-              ? data.responsibleUsers
-              : data.responsibleUserId && data.responsibleUserName
-                ? [
-                    {
-                      id: data.responsibleUserId,
-                      name: data.responsibleUserName,
-                      storeId: data.storeId,
-                    },
-                  ]
-                : [];
-
-          const responsibleUserIdsFromDoc =
-            Array.isArray(data.responsibleUserIds) && data.responsibleUserIds.length
-              ? data.responsibleUserIds
-              : responsibleUsersFromDoc.map((responsibleUser) => responsibleUser.id);
-
-          return {
-            id: doc.id,
-            plate: data.plate,
-            model: data.model,
-            storeId: data.storeId,
-            status: data.status ?? "disponivel",
-            currentKm: data.currentKm,
-            responsibleUserId: data.responsibleUserId,
-            responsibleUserName:
-              data.responsibleUserName || responsibleUsersFromDoc[0]?.name || "",
-            responsibleUserIds: responsibleUserIdsFromDoc,
-            responsibleUsers: responsibleUsersFromDoc,
-          };
-        });
-        setVehicles(vList);
-
-        let routesSnap;
-        if (isAdmin) {
-          routesSnap = await getDocs(collection(db, "routes"));
-        } else {
-          routesSnap = await getDocs(
-            query(
-              collection(db, "routes"),
-              where("responsibleUserIds", "array-contains", user.id)
-            )
-          );
-        }
-
-        setRoutes(
-          routesSnap.docs.map((doc) => {
-            const data = doc.data() as any;
-            return {
-              id: doc.id,
-              vehiclePlate: data.vehiclePlate,
-              vehicleModel: data.vehicleModel,
-              driverName: data.driverName,
-              origem: data.origem ?? null,
-              destino: data.destino ?? null,
-              startKm: Number(data.startKm || 0),
-              startAt: data.startAt ?? null,
-              endAt: data.endAt ?? null,
-              distanceKm: data.distanceKm ?? null,
-              status: data.status ?? "em_andamento",
-            };
-          })
+        const vehicleDocs = await getVehicleDocsForUser(db, user);
+        const allVehicles = vehicleDocs.map((snapshot) =>
+          parseVehicle(snapshot.id, snapshot.data())
+        );
+        const visibleVehicles = isAdmin
+          ? allVehicles
+          : allVehicles.filter((vehicle) => canUserUseVehicle(user, vehicle));
+        const allowedVehicleIds = new Set(visibleVehicles.map((vehicle) => vehicle.id));
+        const visibleVehicleStoreIds = new Set(
+          visibleVehicles.map((vehicle) => vehicle.storeId).filter(Boolean)
+        );
+        const visibleVehicleStoreKeys = new Set(
+          visibleVehicles
+            .map((vehicle) => normalizeScopeValue(vehicle.storeId))
+            .filter(Boolean)
         );
 
-        let fuelingsSnap;
-        if (isAdmin) {
-          fuelingsSnap = await getDocs(
-            query(collection(db, "fuelings"), orderBy("date", "desc"))
-          );
-        } else {
-          fuelingsSnap = await getDocs(
-            query(
-              collection(db, "fuelings"),
-              where("responsibleUserIds", "array-contains", user.id)
+        const routesRequest = isAdmin
+          ? getDocs(collection(db, "routes")).then((snapshot) => snapshot.docs)
+          : getRecordDocsForUserByVehicles(
+              db,
+              "routes",
+              user,
+              Array.from(allowedVehicleIds)
+            );
+        const fuelingsRequest = isAdmin
+          ? getDocs(query(collection(db, "fuelings"), orderBy("date", "desc"))).then(
+              (snapshot) => snapshot.docs
             )
-          );
-        }
-
-        let fList: Fueling[] = fuelingsSnap.docs.map((doc) => {
-          const data = doc.data() as any;
-          return {
-            id: doc.id,
-            vehiclePlate: data.vehiclePlate,
-            vehicleModel: data.vehicleModel,
-            storeId: data.storeId,
-            date: data.date,
-            liters: Number(data.liters || 0),
-            pricePerL: Number(data.pricePerL || 0),
-            total: Number(data.total || 0),
-          };
-        });
-
-        if (!isAdmin) {
-          fList = fList.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-        }
-        setFuelings(fList);
-
-        let maintSnap;
-        if (isAdmin) {
-          maintSnap = await getDocs(
-            query(collection(db, "maintenances"), orderBy("date", "desc"))
-          );
-        } else {
-          maintSnap = await getDocs(
-            query(
-              collection(db, "maintenances"),
-              where("responsibleUserIds", "array-contains", user.id)
-            )
-          );
-        }
-
-        let mList: Maintenance[] = maintSnap.docs.map((doc) => {
-          const data = doc.data() as any;
-          return {
-            id: doc.id,
-            vehiclePlate: data.vehiclePlate,
-            vehicleModel: data.vehicleModel,
-            storeId: data.storeId,
-            date: data.date,
-            type: data.type,
-            cost: Number(data.cost || 0),
-            status: data.status ?? "em_andamento",
-          };
-        });
-
-        if (!isAdmin) {
-          mList = mList.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-        }
-        setMaintenances(mList);
-
-        let driversSnap;
-        if (isAdmin) {
-          driversSnap = await getDocs(collection(db, "drivers"));
-        } else {
-          driversSnap = await getDocs(
-            query(
-              collection(db, "drivers"),
-              where("responsibleUserId", "==", user.id)
-            )
-          );
-        }
-
-        setDrivers(
-          driversSnap.docs.map((doc) => {
-            const data = doc.data() as any;
-            return {
-              id: doc.id,
-              name: data.name,
-              storeId: data.storeId,
-              responsibleUserId: data.responsibleUserId,
-            };
-          })
+          : getRecordDocsForUserByVehicles(
+              db,
+              "fuelings",
+              user,
+              Array.from(allowedVehicleIds)
+            );
+        const maintenancesRequest = isAdmin
+          ? getDocs(
+              query(collection(db, "maintenances"), orderBy("date", "desc"))
+            ).then((snapshot) => snapshot.docs)
+          : getRecordDocsForUserByVehicles(
+              db,
+              "maintenances",
+              user,
+              Array.from(allowedVehicleIds)
+            );
+        const driversRequest = getDriverDocsForUserByStores(
+          db,
+          user,
+          Array.from(visibleVehicleStoreIds)
         );
+
+        const [routeDocs, fuelingDocs, maintenanceDocs, driverDocs] =
+          await Promise.all([
+            routesRequest,
+            fuelingsRequest,
+            maintenancesRequest,
+            driversRequest,
+          ]);
+
+        const visibleRoutes = routeDocs
+          .map((snapshot) => parseRoute(snapshot.id, snapshot.data()))
+          .filter((route) =>
+            canUserAccessRecord(user, {
+              allowedVehicleIds,
+              responsibleUserId: route.responsibleUserId,
+              storeId: route.storeId,
+              vehicleId: route.vehicleId,
+            })
+          )
+          .sort((a, b) => (b.startAt || "").localeCompare(a.startAt || ""));
+
+        const visibleFuelings = fuelingDocs
+          .map((snapshot) => parseFueling(snapshot.id, snapshot.data()))
+          .filter((fueling) =>
+            canUserAccessRecord(user, {
+              allowedVehicleIds,
+              responsibleUserId: fueling.responsibleUserId,
+              storeId: fueling.storeId,
+              vehicleId: fueling.vehicleId,
+            })
+          )
+          .sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+
+        const visibleMaintenances = maintenanceDocs
+          .map((snapshot) => parseMaintenance(snapshot.id, snapshot.data()))
+          .filter((maintenance) =>
+            canUserAccessRecord(user, {
+              allowedVehicleIds,
+              responsibleUserId: maintenance.responsibleUserId,
+              storeId: maintenance.storeId,
+              vehicleId: maintenance.vehicleId,
+            })
+          )
+          .sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+
+        const visibleDrivers = driverDocs
+          .map((snapshot) => parseDriver(snapshot.id, snapshot.data()))
+          .filter((driver) => {
+            if (isAdmin) return true;
+            const driverStoreKey = normalizeScopeValue(driver.storeId);
+
+            return Boolean(
+              driver.responsibleUserId === user.id ||
+                visibleVehicleStoreKeys.has(driverStoreKey)
+            );
+          })
+          .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+
+        setVehicles(visibleVehicles);
+        setRoutes(visibleRoutes);
+        setFuelings(visibleFuelings);
+        setMaintenances(visibleMaintenances);
+        setDrivers(visibleDrivers);
       } catch (error) {
         console.error("Erro ao carregar dashboard:", error);
         setErrorMsg("Erro ao carregar dados do dashboard.");
@@ -477,23 +655,6 @@ export default function DashboardPage() {
     loadAll();
   }, [isAdmin, user]);
 
-  function isInRelativeMonth(dateStr: string | null | undefined, offset = 0) {
-    if (!dateStr) return false;
-    const date = new Date(dateStr);
-    if (Number.isNaN(date.getTime())) return false;
-    const now = new Date();
-    const reference = new Date(now.getFullYear(), now.getMonth() + offset, 1);
-
-    return (
-      date.getFullYear() === reference.getFullYear() &&
-      date.getMonth() === reference.getMonth()
-    );
-  }
-
-  function isInCurrentMonth(dateStr?: string | null) {
-    return isInRelativeMonth(dateStr, 0);
-  }
-
   const totalVeiculos = vehicles.length;
   const veiculosEmRota = vehicles.filter((vehicle) => vehicle.status === "em_rota").length;
   const veiculosEmManutencao = vehicles.filter(
@@ -502,10 +663,13 @@ export default function DashboardPage() {
   const veiculosDisponiveis = vehicles.filter(
     (vehicle) => vehicle.status === "disponivel"
   ).length;
+  const lojasMonitoradas = new Set(
+    vehicles.map((vehicle) => normalizeStoreKey(vehicle.storeId)).filter(Boolean)
+  ).size;
   const rotasEmAndamento = routes
     .filter((route) => route.status === "em_andamento")
     .sort((a, b) => (b.startAt || "").localeCompare(a.startAt || ""));
-  const ultimasRotasEmAndamento = rotasEmAndamento.slice(0, 5);
+  const ultimasRotasEmAndamento = rotasEmAndamento.slice(0, 4);
 
   const fuelingsMes = useMemo(
     () => fuelings.filter((fueling) => isInCurrentMonth(fueling.date)),
@@ -516,7 +680,7 @@ export default function DashboardPage() {
     [fuelings]
   );
   const ultimosAbastecimentos = useMemo(
-    () => fuelingsMes.slice(0, 5),
+    () => fuelingsMes.slice(0, 4),
     [fuelingsMes]
   );
   const maintMes = useMemo(
@@ -533,6 +697,10 @@ export default function DashboardPage() {
   const manutencoesEmAndamento = useMemo(
     () => maintenances.filter((maintenance) => maintenance.status === "em_andamento"),
     [maintenances]
+  );
+  const manutencoesPreview = useMemo(
+    () => manutencoesEmAndamento.slice(0, 5),
+    [manutencoesEmAndamento]
   );
   const finalizadasMes = useMemo(
     () =>
@@ -697,10 +865,6 @@ export default function DashboardPage() {
     finalizadasMes.length,
     finalizadasMesAnterior.length
   );
-  const abastecimentosComparativo = getComparisonData(
-    fuelingsMes.length,
-    fuelingsMesAnterior.length
-  );
   const manutencoesComparativo = getComparisonData(
     maintMes.length,
     maintMesAnterior.length
@@ -805,40 +969,196 @@ export default function DashboardPage() {
     veiculosDisponiveis,
     vehicles.length,
   ]);
-  const pendenciasAtivas = rotasLongasEmAndamento.length + manutencoesEmAndamento.length;
+  const pendenciasAtivas =
+    rotasLongasEmAndamento.length + manutencoesEmAndamento.length;
+  const quickActions = useMemo<DashboardQuickAction[]>(
+    () =>
+      isAdmin
+        ? [
+            {
+              id: "relatorios",
+              title: "Analisar custos",
+              description: "Fechamento e tendencia do mes.",
+              href: "/relatorios",
+              icon: CircleDollarSign,
+            },
+            {
+              id: "frota",
+              title: "Organizar frota",
+              description: "Status, cobertura e cadastro.",
+              href: "/veiculos",
+              icon: Car,
+            },
+            {
+              id: "usuarios",
+              title: "Gerenciar acessos",
+              description: "Perfis, lojas e permissoes.",
+              href: "/admin/usuarios",
+              icon: ShieldCheck,
+            },
+            {
+              id: "oficina",
+              title: "Controlar oficina",
+              description: "Ordens abertas e liberacoes.",
+              href: "/manutencoes",
+              icon: Wrench,
+            },
+          ]
+        : [
+            {
+              id: "rotas",
+              title: "Abrir rotas",
+              description: "Saidas e retornos da unidade.",
+              href: "/rotas",
+              icon: MapIcon,
+            },
+            {
+              id: "combustivel",
+              title: "Registrar combustivel",
+              description: "Lancamentos do dia a dia.",
+              href: "/abastecimentos",
+              icon: Fuel,
+            },
+            {
+              id: "frota",
+              title: "Consultar frota",
+              description: "Disponibilidade, KM e cobertura.",
+              href: "/veiculos",
+              icon: Car,
+            },
+            {
+              id: "oficina",
+              title: "Abrir manutencao",
+              description: "Indisponibilidade e retorno.",
+              href: "/manutencoes",
+              icon: Wrench,
+            },
+          ],
+    [isAdmin]
+  );
+  const focusItems = useMemo<DashboardFocusItem[]>(
+    () =>
+      isAdmin
+        ? [
+            {
+              id: "disponibilidade",
+              label: "Disponibilidade",
+              value: `${Math.round(disponibilidadePercentual)}%`,
+              helper: `${veiculosDisponiveis}/${totalVeiculos} livres agora.`,
+              icon: Car,
+              accent: "green",
+            },
+            {
+              id: "rotas-mes",
+              label: "Rotas do mes",
+              value: String(finalizadasMes.length),
+              helper: `${rotasEmAndamento.length} abertas agora.`,
+              icon: MapIcon,
+              accent: "blue",
+            },
+            {
+              id: "custo-mes",
+              label: "Custo acumulado",
+              value: formatCurrency(totalCustoMes),
+              helper: `Comb. ${formatCurrency(totalCombustivelMes)} | Ofic. ${formatCurrency(totalManutencaoMes)}`,
+              icon: CircleDollarSign,
+              accent: "yellow",
+            },
+            {
+              id: "alertas",
+              label: "Pontos de atencao",
+              value: String(dashboardAlerts.length),
+              helper: `${dashboardAlerts.length} alerta(s) ativos agora.`,
+              icon: AlertTriangle,
+              accent: "red",
+            },
+          ]
+        : [
+            {
+              id: "veiculos-livres",
+              label: "Veiculos livres",
+              value: String(veiculosDisponiveis),
+              helper: `${vehicles.length} vinculados a sua operacao.`,
+              icon: Car,
+              accent: "green",
+            },
+            {
+              id: "rotas-ativas",
+              label: "Rotas ativas",
+              value: String(rotasEmAndamento.length),
+              helper: `${rotasLongasEmAndamento.length} rota(s) longa(s).`,
+              icon: MapIcon,
+              accent: "blue",
+            },
+            {
+              id: "custo-mes",
+              label: "Custo do mes",
+              value: formatCurrency(totalCustoMes),
+              helper: `Comb. ${formatCurrency(totalCombustivelMes)} | Ofic. ${formatCurrency(totalManutencaoMes)}`,
+              icon: CircleDollarSign,
+              accent: "yellow",
+            },
+            {
+              id: "pendencias",
+              label: "Pendencias ativas",
+              value: String(pendenciasAtivas),
+              helper: `${manutencoesEmAndamento.length} oficina | ${dashboardAlerts.length} alerta(s)`,
+              icon: AlertTriangle,
+              accent: "red",
+            },
+          ],
+    [
+      dashboardAlerts.length,
+      disponibilidadePercentual,
+      finalizadasMes.length,
+      manutencoesEmAndamento.length,
+      pendenciasAtivas,
+      rotasEmAndamento.length,
+      rotasLongasEmAndamento.length,
+      totalCombustivelMes,
+      totalCustoMes,
+      totalManutencaoMes,
+      totalVeiculos,
+      veiculosDisponiveis,
+      vehicles.length,
+      isAdmin,
+    ]
+  );
+  const currentScopeLabel = isAdmin
+    ? `${lojasMonitoradas} loja(s) em leitura`
+    : user?.storeId || "Loja nao informada";
+  const currentScopeHelper = isAdmin
+    ? `${drivers.length} motoristas | ${totalVeiculos} veiculos`
+    : `${drivers.length} motoristas | ${vehicles.length} veiculos`;
   const isDarkTheme = theme === "dark";
   const dashboardHeaderClass = isDarkTheme
     ? "border-yellow-400/10 bg-[linear-gradient(145deg,rgba(8,8,10,0.98),rgba(15,15,17,0.96))]"
     : "border-blue-200/80 bg-[linear-gradient(145deg,rgba(239,246,255,0.96),rgba(255,255,255,0.99))] shadow-[0_24px_56px_rgba(37,99,235,0.12)]";
   const dashboardSectionClass = cn(
-    "app-panel gap-0 overflow-hidden py-0",
+    "app-panel min-w-0 gap-0 overflow-hidden py-0",
     isDarkTheme
       ? "border-yellow-400/10"
       : "border-blue-200/80 bg-[linear-gradient(180deg,rgba(239,246,255,0.95),rgba(255,255,255,0.99))] shadow-[0_20px_48px_rgba(37,99,235,0.11)]"
   );
-  const dashboardMetricClass = isDarkTheme
-    ? "border-yellow-400/10 bg-[linear-gradient(180deg,rgba(10,10,12,0.95),rgba(15,15,17,0.96))]"
-    : "border-blue-200/80 bg-[linear-gradient(180deg,rgba(239,246,255,0.98),rgba(255,255,255,0.98))] shadow-[0_18px_40px_rgba(37,99,235,0.1)]";
+  const dashboardMetricClass = "min-w-0";
   const sectionEyebrowClass =
     "text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-700 dark:text-yellow-200";
   const sectionNeutralEyebrowClass =
     "text-[11px] font-semibold uppercase tracking-[0.18em] text-blue-700 dark:text-slate-200";
-  const sectionMetaCardClass =
-    "rounded-[20px] border border-blue-100 bg-blue-50/80 px-4 py-3 dark:border-yellow-400/10 dark:bg-[linear-gradient(180deg,rgba(12,12,14,0.94),rgba(18,18,20,0.98))]";
+  const sectionMetaCardClass = "app-inline-stat min-w-0 px-4 py-3";
   const sectionMetaLabelClass =
     "text-[11px] uppercase tracking-[0.16em] text-blue-700/70 dark:text-slate-400";
-  const detailCardClass =
-    "rounded-[22px] border border-blue-100/80 bg-[linear-gradient(180deg,rgba(239,246,255,0.78),rgba(255,255,255,0.98))] p-4 dark:border-yellow-400/10 dark:bg-[linear-gradient(180deg,rgba(12,12,14,0.94),rgba(18,18,20,0.98))]";
+  const detailCardClass = "app-list-card min-w-0 p-4";
   const detailStatClass =
-    "rounded-[18px] border border-blue-100 bg-white px-3 py-2 dark:border-white/10 dark:bg-slate-950/50";
+    "app-inline-stat min-w-0 px-3 py-2";
   const detailAccentStatClass =
-    "rounded-[18px] border border-blue-200 bg-blue-50 px-3 py-2 dark:border-yellow-400/20 dark:bg-yellow-400/10";
+    "app-inline-stat min-w-0 px-3 py-2";
   const detailAccentLabelClass =
     "text-[11px] uppercase tracking-[0.16em] text-blue-700 dark:text-yellow-200";
-  const softPillClass =
-    "rounded-full border border-blue-100 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 dark:border-white/10 dark:bg-slate-950/40 dark:text-slate-200";
+  const summaryStatClass = "app-inline-stat min-w-0 px-4 py-4";
+  const softPillClass = "app-chip";
   const accentPillClass =
-    "rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 dark:border-yellow-400/20 dark:bg-yellow-400/10 dark:text-yellow-200";
+    "app-chip border-blue-200 bg-blue-50 text-blue-700 dark:border-yellow-400/20 dark:bg-yellow-400/10 dark:text-yellow-200";
   const actionOutlineClass = isDarkTheme
     ? "border-yellow-300/40 hover:border-yellow-300/70 hover:bg-yellow-400/10 hover:text-white"
     : "border-blue-200 bg-white text-blue-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-800";
@@ -854,13 +1174,8 @@ export default function DashboardPage() {
         eyebrow={isAdmin ? "Painel executivo" : "Painel de operacao"}
         title={
           isAdmin
-            ? "Dashboard da frota Grupo MM"
-            : `Operacao da sua frota, ${user.name}`
-        }
-        description={
-          isAdmin
-            ? "Acompanhe custos, status da frota e operacao em um painel mais limpo, com foco no que precisa de decisao rapida."
-            : "Veja somente os dados essenciais da sua operacao: rotas ativas, custos do mes, abastecimentos e manutencoes que precisam de acompanhamento."
+            ? "Painel gerencial da frota"
+            : `Painel da sua operacao, ${user.name}`
         }
         icon={isAdmin ? Gauge : Activity}
         iconTone="yellow"
@@ -946,251 +1261,196 @@ export default function DashboardPage() {
 
       {errorMsg ? <StatusBanner tone="error">{errorMsg}</StatusBanner> : null}
 
-      <Card className={dashboardSectionClass}>
-        <div className="flex flex-col gap-3 border-b border-border px-5 py-5 md:flex-row md:items-start md:justify-between">
-          <div className="space-y-1">
-            <p className={sectionEyebrowClass}>
-              Alertas do dia
-            </p>
-            <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
-              O que precisa de atencao agora
-            </h2>
-            <p className="text-sm text-slate-500 dark:text-slate-400">
-              Sinais de custo, operacao e disponibilidade que merecem acompanhamento.
-            </p>
+      <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.55fr)_360px]">
+        <Card className={dashboardSectionClass}>
+          <div className="border-b border-border px-5 py-5">
+            <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+              <div className="space-y-1">
+                <p className={sectionEyebrowClass}>Visao geral</p>
+                <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+                  {isAdmin ? "Resumo gerencial da frota" : "Resumo da sua operacao"}
+                </h2>
+              </div>
+
+              <div className={sectionMetaCardClass}>
+                <p className={sectionMetaLabelClass}>Escopo atual</p>
+                <p className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+                  {currentScopeLabel}
+                </p>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  {currentScopeHelper}
+                </p>
+              </div>
+            </div>
           </div>
 
-          <div className={sectionMetaCardClass}>
-            <p className={sectionMetaLabelClass}>
-              Alertas ativos
-            </p>
-            <p className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
-              {loading ? "--" : dashboardAlerts.length}
-            </p>
-          </div>
-        </div>
+          <div className="space-y-4 p-4 md:p-5">
+            <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
+              {focusItems.map((item) => (
+                <MetricCard
+                  key={item.id}
+                  label={item.label}
+                  value={loading ? "--" : item.value}
+                  helper={item.helper}
+                  icon={item.icon}
+                  accent={item.accent}
+                  size="hero"
+                  className={cn(dashboardMetricClass, "min-h-[188px]")}
+                />
+              ))}
+            </div>
 
-        <div className="p-4 md:p-5">
-          {loading ? (
-            <StateBlock message="Consolidando os alertas mais importantes da operacao..." tone="info" />
-          ) : dashboardAlerts.length === 0 ? (
-            <StateBlock message="Sem alertas criticos no momento. A operacao esta dentro do esperado." />
-          ) : (
-            <div className="grid gap-3 xl:grid-cols-2 2xl:grid-cols-4">
-              {dashboardAlerts.map((alert) => {
-                const toneClasses =
-                  alert.tone === "danger"
-                    ? "border-red-200 bg-red-50/90 text-red-700 dark:border-red-400/20 dark:bg-red-500/10 dark:text-red-200"
-                    : alert.tone === "warning"
-                      ? "border-blue-200 bg-blue-50/90 text-blue-700 dark:border-yellow-400/20 dark:bg-yellow-400/10 dark:text-yellow-200"
-                      : "border-blue-100 bg-white text-blue-700 dark:border-yellow-400/10 dark:bg-slate-950/60 dark:text-slate-200";
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className={summaryStatClass}>
+                <p className={sectionMetaLabelClass}>KM no mes</p>
+                <p className="mt-2 text-xl font-semibold tracking-tight text-slate-950 dark:text-white">
+                  {loading ? "--" : formatNumber(totalKmMes, " km")}
+                </p>
+              </div>
+              <div className={summaryStatClass}>
+                <p className={sectionMetaLabelClass}>Abastecimentos</p>
+                <p className="mt-2 text-xl font-semibold tracking-tight text-slate-950 dark:text-white">
+                  {loading ? "--" : String(fuelingsMes.length)}
+                </p>
+              </div>
+              <div className={summaryStatClass}>
+                <p className={sectionMetaLabelClass}>
+                  {isAdmin ? "Lojas em leitura" : "Motoristas"}
+                </p>
+                <p className="mt-2 text-xl font-semibold tracking-tight text-slate-950 dark:text-white">
+                  {loading ? "--" : String(isAdmin ? lojasMonitoradas : drivers.length)}
+                </p>
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        <div className="grid gap-5">
+          <Card className={dashboardSectionClass}>
+            <div className="border-b border-border px-5 py-5">
+              <p className={sectionNeutralEyebrowClass}>Acoes rapidas</p>
+              <h2 className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+                Atalhos principais
+              </h2>
+            </div>
+
+            <div className="grid gap-3 p-4 sm:grid-cols-2 md:p-5 2xl:grid-cols-1">
+              {quickActions.map((action) => {
+                const Icon = action.icon;
 
                 return (
-                  <div
-                    key={alert.id}
-                    className={detailCardClass}
+                  <button
+                    key={action.id}
+                    type="button"
+                    onClick={() => router.push(action.href)}
+                    className={cn(
+                      "group w-full rounded-[22px] border border-blue-100 bg-[linear-gradient(180deg,rgba(239,246,255,0.76),rgba(255,255,255,0.98))] p-4 text-left transition hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_16px_30px_rgba(37,99,235,0.08)] dark:border-yellow-400/10 dark:bg-[linear-gradient(180deg,rgba(12,12,14,0.94),rgba(18,18,20,0.98))] dark:hover:border-yellow-400/20"
+                    )}
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div
-                        className={cn(
-                          "flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border",
-                          toneClasses
-                        )}
-                      >
-                        <AlertTriangle className="h-5 w-5" />
+                    <div className="flex min-h-[92px] items-start gap-3">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-blue-100 bg-white text-blue-700 transition group-hover:border-blue-200 group-hover:text-blue-800 dark:border-white/10 dark:bg-slate-950/50 dark:text-yellow-200">
+                        <Icon className="h-4 w-4" />
                       </div>
 
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className={cn("h-9 rounded-xl px-3", alertActionClass)}
-                        onClick={() => router.push(alert.href)}
-                      >
-                        {alert.actionLabel}
-                        <ArrowRight className="h-3.5 w-3.5" />
-                      </Button>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold text-slate-950 dark:text-white">
+                            {action.title}
+                          </p>
+                          <ArrowRight className="h-4 w-4 text-slate-400 transition group-hover:text-blue-700 dark:group-hover:text-yellow-200" />
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
+                          {action.description}
+                        </p>
+                      </div>
                     </div>
-
-                    <div className="mt-4 space-y-2">
-                      <h3 className="text-sm font-semibold text-slate-950 dark:text-white">
-                        {alert.title}
-                      </h3>
-                      <p className="text-sm leading-6 text-slate-500 dark:text-slate-400">
-                        {alert.description}
-                      </p>
-                    </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
-          )}
-        </div>
-      </Card>
+          </Card>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {isAdmin ? (
-          <>
-            <MetricCard
-              label="Frota monitorada"
-              value={loading ? "--" : String(totalVeiculos)}
-              helper={`${Math.round(disponibilidadePercentual)}% da frota esta disponivel hoje.`}
-              icon={Car}
-              accent="yellow"
-              className={dashboardMetricClass}
-              aside={
-                <div className="flex flex-wrap gap-2">
-                  <span className={softPillClass}>
-                    {veiculosEmRota} em rota
-                  </span>
-                  <span className={accentPillClass}>
-                    {veiculosEmManutencao} em manutencao
-                  </span>
+          <Card className={dashboardSectionClass}>
+            <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-5">
+              <div>
+                <p className={sectionEyebrowClass}>Alertas</p>
+                <h2 className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+                  Prioridades do momento
+                </h2>
+              </div>
+
+              <div className={sectionMetaCardClass}>
+                <p className={sectionMetaLabelClass}>Ativos</p>
+                <p className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+                  {loading ? "--" : dashboardAlerts.length}
+                </p>
+              </div>
+            </div>
+
+            <div className="p-4 md:p-5">
+              {loading ? (
+                <StateBlock message="Consolidando alertas..." tone="info" />
+              ) : dashboardAlerts.length === 0 ? (
+                <StateBlock message="Sem alertas criticos." />
+              ) : (
+                <div className="space-y-3">
+                  {dashboardAlerts.map((alert) => {
+                    const toneClasses =
+                      alert.tone === "danger"
+                        ? "border-red-200 bg-red-50/90 text-red-700 dark:border-red-400/20 dark:bg-red-500/10 dark:text-red-200"
+                        : alert.tone === "warning"
+                          ? "border-blue-200 bg-blue-50/90 text-blue-700 dark:border-yellow-400/20 dark:bg-yellow-400/10 dark:text-yellow-200"
+                          : "border-blue-100 bg-white text-blue-700 dark:border-yellow-400/10 dark:bg-slate-950/60 dark:text-slate-200";
+
+                    return (
+                      <div key={alert.id} className={detailCardClass}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div
+                            className={cn(
+                              "flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border",
+                              toneClasses
+                            )}
+                          >
+                            <AlertTriangle className="h-4 w-4" />
+                          </div>
+
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className={cn("h-8 rounded-xl px-2.5", alertActionClass)}
+                            onClick={() => router.push(alert.href)}
+                          >
+                            {alert.actionLabel}
+                            <ArrowRight className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+
+                        <div className="mt-3 space-y-1.5">
+                          <h3 className="text-sm font-semibold text-slate-950 dark:text-white">
+                            {alert.title}
+                          </h3>
+                          <p className="text-sm leading-6 text-slate-500 dark:text-slate-400">
+                            {alert.description}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              }
-            />
-            <MetricCard
-              label="Rotas concluidas no mes"
-              value={loading ? "--" : String(finalizadasMes.length)}
-              helper={`${drivers.length} motoristas em leitura e ${rotasEmAndamento.length} rotas ainda abertas.`}
-              icon={MapIcon}
-              accent="slate"
-              className={dashboardMetricClass}
-              aside={
-                <TrendChip
-                  comparison={rotasComparativo}
-                  previousLabel={previousPeriodLabel}
-                  emptyLabel="Primeiro fechamento comparavel"
-                />
-              }
-            />
-            <MetricCard
-              label="Custo do mes"
-              value={loading ? "--" : formatCurrency(totalCustoMes)}
-              helper={`${formatCurrency(totalCombustivelMes)} em combustivel e ${formatCurrency(totalManutencaoMes)} em manutencao.`}
-              icon={CircleDollarSign}
-              accent="yellow"
-              className={dashboardMetricClass}
-              aside={
-                <TrendChip
-                  comparison={custoComparativo}
-                  higherIsBetter={false}
-                  previousLabel={previousPeriodLabel}
-                  emptyLabel="Sem base de custo anterior"
-                />
-              }
-            />
-            <MetricCard
-              label="Custo por km"
-              value={loading ? "--" : formatCurrency(custoPorKmMes)}
-              helper={
-                totalKmMes > 0
-                  ? `${formatNumber(totalKmMes, " km")} finalizados no periodo atual.`
-                  : "Aguardando quilometragem finalizada para consolidar este indicador."
-              }
-              icon={Gauge}
-              accent="yellow"
-              className={dashboardMetricClass}
-              aside={
-                <TrendChip
-                  comparison={custoPorKmComparativo}
-                  higherIsBetter={false}
-                  previousLabel={previousPeriodLabel}
-                  emptyLabel="Sem base de custo por km"
-                />
-              }
-            />
-          </>
-        ) : (
-          <>
-            <MetricCard
-              label="Veiculos sob sua responsabilidade"
-              value={loading ? "--" : String(vehicles.length)}
-              helper={`${veiculosDisponiveis} disponiveis e ${veiculosEmRota} em rota.`}
-              icon={Car}
-              accent="yellow"
-              className={dashboardMetricClass}
-              aside={
-                <div className="flex flex-wrap gap-2">
-                  <span className={softPillClass}>
-                    {veiculosDisponiveis} livres agora
-                  </span>
-                  <span className={accentPillClass}>
-                    {veiculosEmManutencao} em oficina
-                  </span>
-                </div>
-              }
-            />
-            <MetricCard
-              label="Rotas em acompanhamento"
-              value={loading ? "--" : String(rotasEmAndamento.length)}
-              helper={`${finalizadasMes.length} rotas finalizadas no periodo atual.`}
-              icon={MapIcon}
-              accent="slate"
-              className={dashboardMetricClass}
-              aside={
-                <div className="flex flex-wrap gap-2">
-                  <TrendChip
-                    comparison={rotasComparativo}
-                    previousLabel={previousPeriodLabel}
-                    emptyLabel="Primeiro fechamento comparavel"
-                  />
-                  {rotasLongasEmAndamento.length > 0 ? (
-                    <span className={accentPillClass}>
-                      {rotasLongasEmAndamento.length} rota(s) longa(s)
-                    </span>
-                  ) : null}
-                </div>
-              }
-            />
-            <MetricCard
-              label="Custo do mes"
-              value={loading ? "--" : formatCurrency(totalCustoMes)}
-              helper={`${formatCurrency(totalCombustivelMes)} em combustivel e ${formatCurrency(totalManutencaoMes)} em manutencao.`}
-              icon={CircleDollarSign}
-              accent="yellow"
-              className={dashboardMetricClass}
-              aside={
-                <TrendChip
-                  comparison={custoComparativo}
-                  higherIsBetter={false}
-                  previousLabel={previousPeriodLabel}
-                  emptyLabel="Sem base de custo anterior"
-                />
-              }
-            />
-            <MetricCard
-              label="Pendencias ativas"
-              value={loading ? "--" : String(pendenciasAtivas)}
-              helper={`${manutencoesEmAndamento.length} manutencoes abertas e ${rotasLongasEmAndamento.length} rota(s) com longa duracao.`}
-              icon={Wrench}
-              accent="red"
-              className={dashboardMetricClass}
-              aside={
-                <TrendChip
-                  comparison={manutencoesComparativo}
-                  higherIsBetter={false}
-                  previousLabel={previousPeriodLabel}
-                  emptyLabel="Sem base anterior"
-                />
-              }
-            />
-          </>
-        )}
+              )}
+            </div>
+          </Card>
+        </div>
       </div>
 
-      <div className="grid gap-5 xl:grid-cols-3">
-        <Card className={cn(dashboardSectionClass, "xl:col-span-2")}>
+      <div className="grid gap-5 2xl:grid-cols-3">
+        <Card className={cn(dashboardSectionClass, "2xl:col-span-2")}>
           <div className="flex flex-col gap-3 border-b border-border px-5 py-5 md:flex-row md:items-start md:justify-between">
             <div className="space-y-1">
-              <p className={sectionEyebrowClass}>
-                Custos da frota
-              </p>
+              <p className={sectionEyebrowClass}>Painel visual</p>
               <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
-                Evolucao mensal de combustivel e manutencao
+                Custos no tempo
               </h2>
-              <p className="text-sm text-slate-500 dark:text-slate-400">
-                Leitura clara da evolucao de custos no tempo.
-              </p>
             </div>
 
             <div className="flex flex-col gap-3 md:items-end">
@@ -1226,9 +1486,7 @@ export default function DashboardPage() {
               </div>
 
               <div className={sectionMetaCardClass}>
-                <p className={sectionMetaLabelClass}>
-                  Fechamento atual
-                </p>
+                <p className={sectionMetaLabelClass}>Fechamento atual</p>
                 <p className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
                   {loading ? "--" : formatCurrency(totalCustoMes)}
                 </p>
@@ -1318,16 +1576,24 @@ export default function DashboardPage() {
               </ResponsiveContainer>
             )}
           </div>
+
+          <div className="border-t border-border px-4 pb-4 pt-0 md:px-6 md:pb-5">
+            <div className="flex flex-wrap gap-2">
+              <span className={softPillClass}>{loading ? "--" : `${fuelingsMes.length} abastecimento(s)`}</span>
+              <span className={softPillClass}>{loading ? "--" : `${maintMes.length} manutencao(oes)`}</span>
+              <span className={accentPillClass}>
+                {loading ? "--" : `${formatNumber(totalKmMes, " km")} no mes`}
+              </span>
+            </div>
+          </div>
         </Card>
 
         <div className="grid gap-5">
           <Card className={dashboardSectionClass}>
             <div className="border-b border-border px-5 py-5">
-              <p className={sectionEyebrowClass}>
-                Status da frota
-              </p>
+              <p className={sectionEyebrowClass}>Status da frota</p>
               <h2 className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
-                Distribuicao atual dos veiculos
+                Distribuicao atual
               </h2>
             </div>
 
@@ -1362,9 +1628,7 @@ export default function DashboardPage() {
 
                   <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                     <div className="rounded-full border border-blue-100 bg-white/95 px-5 py-4 text-center shadow-[0_12px_28px_rgba(37,99,235,0.1)] dark:border-yellow-400/10 dark:bg-[linear-gradient(180deg,rgba(8,8,10,0.92),rgba(15,15,17,0.98))]">
-                      <p className={sectionMetaLabelClass}>
-                        Frota
-                      </p>
+                      <p className={sectionMetaLabelClass}>Frota</p>
                       <p className="mt-1 text-2xl font-semibold text-slate-950 dark:text-white">
                         {totalVeiculos}
                       </p>
@@ -1392,9 +1656,7 @@ export default function DashboardPage() {
 
           <Card className={dashboardSectionClass}>
             <div className="border-b border-border px-5 py-5">
-              <p className={sectionNeutralEyebrowClass}>
-                Movimento do mes
-              </p>
+              <p className={sectionNeutralEyebrowClass}>Movimento do mes</p>
               <h2 className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
                 Volume operacional
               </h2>
@@ -1440,7 +1702,172 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="grid gap-5 xl:grid-cols-2">
+      <Card className={dashboardSectionClass}>
+        <div className="flex flex-col gap-3 px-5 py-5 md:flex-row md:items-center md:justify-between">
+          <div>
+            <p className={sectionNeutralEyebrowClass}>Painel completo</p>
+            <h2 className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+              Indicadores e filas operacionais
+            </h2>
+          </div>
+
+          <Button
+            type="button"
+            variant={showExtendedInsights ? "secondary" : "outline"}
+            className={!showExtendedInsights ? actionOutlineClass : undefined}
+            onClick={() => setShowExtendedInsights((current) => !current)}
+          >
+            {showExtendedInsights ? "Ocultar detalhamento" : "Abrir detalhamento"}
+          </Button>
+        </div>
+      </Card>
+
+      {showExtendedInsights ? (
+      <>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-4">
+        {isAdmin ? (
+          <>
+            <MetricCard
+              label="Frota monitorada"
+              value={loading ? "--" : String(totalVeiculos)}
+              helper={`${Math.round(disponibilidadePercentual)}% disponivel.`}
+              icon={Car}
+              accent="yellow"
+              className={dashboardMetricClass}
+              aside={
+                <div className="flex flex-wrap gap-2">
+                  <span className={softPillClass}>{veiculosEmRota} em rota</span>
+                  <span className={accentPillClass}>{veiculosEmManutencao} em oficina</span>
+                </div>
+              }
+            />
+            <MetricCard
+              label="Rotas concluidas"
+              value={loading ? "--" : String(finalizadasMes.length)}
+              helper={`${rotasEmAndamento.length} abertas agora.`}
+              icon={MapIcon}
+              accent="slate"
+              className={dashboardMetricClass}
+              aside={
+                <TrendChip
+                  comparison={rotasComparativo}
+                  previousLabel={previousPeriodLabel}
+                  emptyLabel="Primeiro fechamento comparavel"
+                />
+              }
+            />
+            <MetricCard
+              label="Custo do mes"
+              value={loading ? "--" : formatCurrency(totalCustoMes)}
+              helper={`${formatCurrency(totalCombustivelMes)} combustivel | ${formatCurrency(totalManutencaoMes)} oficina`}
+              icon={CircleDollarSign}
+              accent="yellow"
+              className={dashboardMetricClass}
+              aside={
+                <TrendChip
+                  comparison={custoComparativo}
+                  higherIsBetter={false}
+                  previousLabel={previousPeriodLabel}
+                  emptyLabel="Sem base anterior"
+                />
+              }
+            />
+            <MetricCard
+              label="Custo por km"
+              value={loading ? "--" : formatCurrency(custoPorKmMes)}
+              helper={
+                totalKmMes > 0
+                  ? `${formatNumber(totalKmMes, " km")} no periodo.`
+                  : "Sem KM fechado no periodo."
+              }
+              icon={Gauge}
+              accent="yellow"
+              className={dashboardMetricClass}
+              aside={
+                <TrendChip
+                  comparison={custoPorKmComparativo}
+                  higherIsBetter={false}
+                  previousLabel={previousPeriodLabel}
+                  emptyLabel="Sem base anterior"
+                />
+              }
+            />
+          </>
+        ) : (
+          <>
+            <MetricCard
+              label="Veiculos vinculados"
+              value={loading ? "--" : String(vehicles.length)}
+              helper={`${veiculosDisponiveis} livres | ${veiculosEmRota} em rota`}
+              icon={Car}
+              accent="yellow"
+              className={dashboardMetricClass}
+              aside={
+                <div className="flex flex-wrap gap-2">
+                  <span className={softPillClass}>{veiculosDisponiveis} livres</span>
+                  <span className={accentPillClass}>{veiculosEmManutencao} em oficina</span>
+                </div>
+              }
+            />
+            <MetricCard
+              label="Rotas ativas"
+              value={loading ? "--" : String(rotasEmAndamento.length)}
+              helper={`${finalizadasMes.length} fechadas no periodo.`}
+              icon={MapIcon}
+              accent="slate"
+              className={dashboardMetricClass}
+              aside={
+                <div className="flex flex-wrap gap-2">
+                  <TrendChip
+                    comparison={rotasComparativo}
+                    previousLabel={previousPeriodLabel}
+                    emptyLabel="Primeiro fechamento comparavel"
+                  />
+                  {rotasLongasEmAndamento.length > 0 ? (
+                    <span className={accentPillClass}>
+                      {rotasLongasEmAndamento.length} longa(s)
+                    </span>
+                  ) : null}
+                </div>
+              }
+            />
+            <MetricCard
+              label="Custo do mes"
+              value={loading ? "--" : formatCurrency(totalCustoMes)}
+              helper={`${formatCurrency(totalCombustivelMes)} combustivel | ${formatCurrency(totalManutencaoMes)} oficina`}
+              icon={CircleDollarSign}
+              accent="yellow"
+              className={dashboardMetricClass}
+              aside={
+                <TrendChip
+                  comparison={custoComparativo}
+                  higherIsBetter={false}
+                  previousLabel={previousPeriodLabel}
+                  emptyLabel="Sem base anterior"
+                />
+              }
+            />
+            <MetricCard
+              label="Pendencias"
+              value={loading ? "--" : String(pendenciasAtivas)}
+              helper={`${manutencoesEmAndamento.length} oficina | ${rotasLongasEmAndamento.length} rota longa`}
+              icon={Wrench}
+              accent="red"
+              className={dashboardMetricClass}
+              aside={
+                <TrendChip
+                  comparison={manutencoesComparativo}
+                  higherIsBetter={false}
+                  previousLabel={previousPeriodLabel}
+                  emptyLabel="Sem base anterior"
+                />
+              }
+            />
+          </>
+        )}
+      </div>
+
+      <div className="grid gap-5 2xl:grid-cols-2">
         <Card className={dashboardSectionClass}>
           <div className="flex flex-col gap-3 border-b border-border px-5 py-5 md:flex-row md:items-start md:justify-between">
             <div>
@@ -1474,7 +1901,7 @@ export default function DashboardPage() {
                     key={route.id}
                     className={detailCardClass}
                   >
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-start 2xl:justify-between">
                       <div className="min-w-0">
                         <p className="truncate text-sm font-semibold text-slate-950 dark:text-white">
                           {route.vehiclePlate} - {route.vehicleModel}
@@ -1488,7 +1915,7 @@ export default function DashboardPage() {
                         </p>
                       </div>
 
-                      <div className="grid grid-cols-3 gap-2 md:min-w-[320px]">
+                      <div className="grid w-full min-w-0 grid-cols-1 gap-2 sm:grid-cols-3 2xl:w-[320px]">
                         <div className={detailStatClass}>
                           <p className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
                             Inicio
@@ -1517,6 +1944,12 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 ))}
+
+                {rotasEmAndamento.length > ultimasRotasEmAndamento.length ? (
+                  <p className="text-sm text-slate-500 dark:text-slate-400">
+                    Mostrando {ultimasRotasEmAndamento.length} de {rotasEmAndamento.length} rota(s) em andamento.
+                  </p>
+                ) : null}
               </div>
             )}
           </div>
@@ -1555,7 +1988,7 @@ export default function DashboardPage() {
                     key={fueling.id}
                     className={detailCardClass}
                   >
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="flex flex-col gap-3 2xl:flex-row 2xl:items-start 2xl:justify-between">
                       <div className="min-w-0">
                         <p className="truncate text-sm font-semibold text-slate-950 dark:text-white">
                           {fueling.vehiclePlate} - {fueling.vehicleModel}
@@ -1568,7 +2001,7 @@ export default function DashboardPage() {
                         </p>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2 md:min-w-[240px]">
+                      <div className="grid w-full min-w-0 grid-cols-2 gap-2 2xl:w-[240px]">
                         <div className={detailStatClass}>
                           <p className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
                             Litros
@@ -1589,6 +2022,12 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 ))}
+
+                {fuelingsMes.length > ultimosAbastecimentos.length ? (
+                  <p className="text-sm text-slate-500 dark:text-slate-400">
+                    Mostrando {ultimosAbastecimentos.length} de {fuelingsMes.length} abastecimento(s) do mes.
+                  </p>
+                ) : null}
               </div>
             )}
           </div>
@@ -1649,7 +2088,7 @@ export default function DashboardPage() {
         ) : (
           <>
             <div className="space-y-3 p-4 md:hidden">
-              {manutencoesEmAndamento.map((maintenance) => (
+              {manutencoesPreview.map((maintenance) => (
                 <div
                   key={maintenance.id}
                   className={detailCardClass}
@@ -1726,7 +2165,7 @@ export default function DashboardPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {manutencoesEmAndamento.map((maintenance) => (
+                  {manutencoesPreview.map((maintenance) => (
                     <tr key={maintenance.id}>
                       <td>{formatDateTime(maintenance.date)}</td>
                       <td>
@@ -1768,9 +2207,17 @@ export default function DashboardPage() {
                 </tbody>
               </table>
             </div>
+
+            {manutencoesEmAndamento.length > manutencoesPreview.length ? (
+              <div className="border-t border-border px-5 py-4 text-sm text-slate-500 dark:text-slate-400">
+                Mostrando {manutencoesPreview.length} de {manutencoesEmAndamento.length} manutencao(oes) em andamento. Use o modulo completo para ver toda a fila.
+              </div>
+            ) : null}
           </>
         )}
       </Card>
+      </>
+      ) : null}
     </div>
   );
 }

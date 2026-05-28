@@ -49,6 +49,10 @@ import {
   type ReportRouteRecord,
   type ReportVehicleRecord,
 } from "@/lib/reporting";
+import {
+  getRecordDocsForUserByVehicles,
+  getVehicleDocsForUser,
+} from "@/lib/firestore-access";
 
 interface MonthlySummaryDocument {
   monthKey: string;
@@ -71,12 +75,34 @@ const percentFormatter = new Intl.NumberFormat("pt-BR", {
   maximumFractionDigits: 1,
 });
 
+const chartColors = {
+  fuel: "#f59e0b",
+  maintenance: "#38bdf8",
+  grid: "rgba(148, 163, 184, 0.16)",
+  cursor: "rgba(37, 99, 235, 0.06)",
+};
+
+const chartTick = {
+  fill: "#64748b",
+  fontSize: 11,
+  fontWeight: 600,
+};
+
+const chartMargin = {
+  top: 12,
+  right: 12,
+  bottom: 6,
+  left: 0,
+};
+
 const chartTooltipStyle = {
-  backgroundColor: "#07111f",
-  border: "1px solid rgba(245, 158, 11, 0.35)",
-  borderRadius: 16,
+  backgroundColor: "rgba(15, 23, 42, 0.96)",
+  border: "1px solid rgba(148, 163, 184, 0.22)",
+  borderRadius: 18,
   color: "#e5e7eb",
   fontSize: 12,
+  boxShadow: "0 24px 54px rgba(2, 6, 23, 0.36)",
+  padding: "10px 12px",
 };
 
 function formatCurrency(value: number) {
@@ -122,6 +148,23 @@ function EmptyPanel({ text }: { text: string }) {
   return (
     <div className="flex min-h-40 items-center justify-center rounded-2xl border border-dashed border-border bg-white/70 px-6 text-center text-sm text-slate-500 dark:border-white/10 dark:bg-slate-950/40 dark:text-slate-400">
       {text}
+    </div>
+  );
+}
+
+function ChartFrame({
+  children,
+  className = "h-72",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`relative overflow-hidden rounded-[24px] bg-[linear-gradient(180deg,rgba(248,250,252,0.78),rgba(255,255,255,0.34))] p-2 dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.045),rgba(255,255,255,0.016))] ${className}`}
+    >
+      <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-blue-400/35 to-transparent dark:via-yellow-300/30" />
+      <div className="relative h-full min-w-0">{children}</div>
     </div>
   );
 }
@@ -187,8 +230,8 @@ export default function MonthlyClosingPage() {
           createdAt: createdAtDate ? createdAtDate.toISOString() : null,
         });
 
-        const vehiclesSnap = await getDocs(collection(db, "vehicles"));
-        const allVehicles: ReportVehicleRecord[] = vehiclesSnap.docs.map((docItem) => {
+        const vehicleDocs = await getVehicleDocsForUser(db, user);
+        const allVehicles: ReportVehicleRecord[] = vehicleDocs.map((docItem) => {
           const data = docItem.data();
 
           return {
@@ -225,8 +268,15 @@ export default function MonthlyClosingPage() {
         const vehicleById = new Map<string, ReportVehicleRecord>();
         allVehicles.forEach((vehicle) => vehicleById.set(vehicle.id, vehicle));
 
-        const routesSnap = await getDocs(collection(db, "routes"));
-        const allRoutes: ReportRouteRecord[] = routesSnap.docs.map((docItem) => {
+        const routeDocs = isAdmin
+          ? (await getDocs(collection(db, "routes"))).docs
+          : await getRecordDocsForUserByVehicles(
+              db,
+              "routes",
+              user,
+              visibleVehicles.map((vehicle) => vehicle.id)
+            );
+        const allRoutes: ReportRouteRecord[] = routeDocs.map((docItem) => {
           const data = docItem.data();
 
           return {
@@ -261,8 +311,15 @@ export default function MonthlyClosingPage() {
               return vehicle ? userCanUseVehicle(vehicle) : false;
             });
 
-        const refuelsSnap = await getDocs(collection(db, "fuelings"));
-        const allRefuels: ReportRefuelRecord[] = refuelsSnap.docs.map((docItem) => {
+        const refuelDocs = isAdmin
+          ? (await getDocs(collection(db, "fuelings"))).docs
+          : await getRecordDocsForUserByVehicles(
+              db,
+              "fuelings",
+              user,
+              visibleVehicles.map((vehicle) => vehicle.id)
+            );
+        const allRefuels: ReportRefuelRecord[] = refuelDocs.map((docItem) => {
           const data = docItem.data();
 
           return {
@@ -296,8 +353,15 @@ export default function MonthlyClosingPage() {
               return vehicle ? userCanUseVehicle(vehicle) : false;
             });
 
-        const maintenancesSnap = await getDocs(collection(db, "maintenances"));
-        const allMaintenances: ReportMaintenanceRecord[] = maintenancesSnap.docs.map(
+        const maintenanceDocs = isAdmin
+          ? (await getDocs(collection(db, "maintenances"))).docs
+          : await getRecordDocsForUserByVehicles(
+              db,
+              "maintenances",
+              user,
+              visibleVehicles.map((vehicle) => vehicle.id)
+            );
+        const allMaintenances: ReportMaintenanceRecord[] = maintenanceDocs.map(
           (docItem) => {
             const data = docItem.data();
 
@@ -610,7 +674,7 @@ export default function MonthlyClosingPage() {
 
       <Card className={reportPanelWideClass}>
         <div className="grid gap-3 md:grid-cols-3">
-          <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+          <div className="app-inline-stat p-4">
             <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
               Competencia
             </p>
@@ -618,7 +682,7 @@ export default function MonthlyClosingPage() {
               {formatMonthLabel(monthKey)}
             </p>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+          <div className="app-inline-stat p-4">
             <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
               Custo consolidado
             </p>
@@ -626,7 +690,7 @@ export default function MonthlyClosingPage() {
               {formatCurrency(analytics.overview.totalCost)}
             </p>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+          <div className="app-inline-stat p-4">
             <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
               Km rodado
             </p>
@@ -636,7 +700,7 @@ export default function MonthlyClosingPage() {
           </div>
         </div>
       </Card>
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
         <KpiTile
           label="Custo total"
           value={formatCurrency(analytics.overview.totalCost)}
@@ -667,7 +731,7 @@ export default function MonthlyClosingPage() {
         />
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[1.3fr_1fr]">
+      <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
         <Card className={reportPanelClass}>
           <div className="mb-5 flex items-center justify-between gap-3">
             <div>
@@ -685,34 +749,64 @@ export default function MonthlyClosingPage() {
             <EmptyPanel text="Sem custos registrados no fechamento selecionado." />
           ) : (
             <div className="grid gap-4 lg:grid-cols-[1fr_0.9fr]">
-              <div className="h-72">
+              <ChartFrame>
+                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+                  <div className="text-center">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                      Total
+                    </p>
+                    <p className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+                      {formatCurrency(analytics.overview.totalCost)}
+                    </p>
+                  </div>
+                </div>
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
+                    <defs>
+                      <linearGradient id="closingFuelPieGradient" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0%" stopColor={chartColors.fuel} stopOpacity={0.98} />
+                        <stop offset="100%" stopColor="#fde68a" stopOpacity={0.68} />
+                      </linearGradient>
+                      <linearGradient id="closingMaintenancePieGradient" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0%" stopColor={chartColors.maintenance} stopOpacity={0.98} />
+                        <stop offset="100%" stopColor="#bae6fd" stopOpacity={0.58} />
+                      </linearGradient>
+                    </defs>
                     <Pie
                       data={analytics.costComposition}
                       dataKey="value"
                       nameKey="name"
-                      innerRadius={75}
+                      innerRadius={78}
                       outerRadius={110}
-                      paddingAngle={4}
+                      paddingAngle={5}
+                      cornerRadius={10}
+                      stroke="rgba(255,255,255,0.88)"
+                      strokeWidth={3}
                     >
                       {analytics.costComposition.map((entry) => (
-                        <Cell key={entry.name} fill={entry.fill} />
+                        <Cell
+                          key={entry.name}
+                          fill={
+                            entry.name.toLowerCase().includes("combust")
+                              ? "url(#closingFuelPieGradient)"
+                              : "url(#closingMaintenancePieGradient)"
+                          }
+                        />
                       ))}
                     </Pie>
                     <Tooltip
                       contentStyle={chartTooltipStyle}
-                      formatter={(value: number) => formatCurrency(value)}
+                      formatter={(value) => formatCurrency(Number(value ?? 0))}
                     />
                   </PieChart>
                 </ResponsiveContainer>
-              </div>
+              </ChartFrame>
 
               <div className="space-y-3">
                 {analytics.costComposition.map((item) => (
                   <div
                     key={item.name}
-                    className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]"
+                    className="app-inline-stat p-4"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
@@ -733,7 +827,7 @@ export default function MonthlyClosingPage() {
                   </div>
                 ))}
 
-                <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+                <div className="app-inline-stat p-4">
                   <p className="text-sm text-slate-400">Eficiência média do mês</p>
                   <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
                     {analytics.overview.kmPerLiter > 0
@@ -760,7 +854,7 @@ export default function MonthlyClosingPage() {
           </div>
 
           <div className="space-y-3">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+            <div className="app-inline-stat p-4">
               <p className="text-sm text-slate-400">Custo por km</p>
               <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
                 {analytics.overview.costPerKm > 0
@@ -768,19 +862,19 @@ export default function MonthlyClosingPage() {
                   : "-"}
               </p>
             </div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+            <div className="app-inline-stat p-4">
               <p className="text-sm text-slate-400">Rotas finalizadas</p>
               <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
                 {percentFormatter.format(analytics.overview.completionRate)}
               </p>
             </div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+            <div className="app-inline-stat p-4">
               <p className="text-sm text-slate-400">Veículos ativos</p>
               <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
                 {analytics.overview.activeVehicles}
               </p>
             </div>
-            <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+            <div className="app-inline-stat p-4">
               <p className="text-sm text-slate-400">Responsáveis com atividade</p>
               <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
                 {analytics.overview.responsiblesCount}
@@ -790,7 +884,7 @@ export default function MonthlyClosingPage() {
         </Card>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid gap-4 2xl:grid-cols-2">
         <Card className={reportPanelClass}>
           <div className="mb-5 flex items-center justify-between gap-3">
             <div>
@@ -856,13 +950,28 @@ export default function MonthlyClosingPage() {
           {topResponsibles.length === 0 ? (
             <EmptyPanel text="Nenhum responsável com atividade no fechamento." />
           ) : (
-            <div className="h-72">
+            <ChartFrame>
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={analytics.responsibleCostChart} layout="vertical">
-                  <CartesianGrid stroke="rgba(148,163,184,0.12)" horizontal={false} />
+                <BarChart
+                  data={analytics.responsibleCostChart}
+                  layout="vertical"
+                  margin={chartMargin}
+                  barCategoryGap="28%"
+                >
+                  <defs>
+                    <linearGradient id="closingResponsibleCostGradient" x1="0" y1="0" x2="1" y2="0">
+                      <stop offset="0%" stopColor={chartColors.maintenance} stopOpacity={0.45} />
+                      <stop offset="100%" stopColor={chartColors.maintenance} stopOpacity={0.98} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid
+                    stroke={chartColors.grid}
+                    strokeDasharray="4 8"
+                    horizontal={false}
+                  />
                   <XAxis
                     type="number"
-                    tick={{ fill: "#94a3b8", fontSize: 11 }}
+                    tick={chartTick}
                     axisLine={false}
                     tickLine={false}
                     tickFormatter={(value) => `R$ ${Number(value).toFixed(0)}`}
@@ -871,24 +980,30 @@ export default function MonthlyClosingPage() {
                     type="category"
                     dataKey="name"
                     width={110}
-                    tick={{ fill: "#94a3b8", fontSize: 11 }}
+                    tick={chartTick}
                     axisLine={false}
                     tickLine={false}
                   />
                   <Tooltip
                     contentStyle={chartTooltipStyle}
-                    formatter={(value: number) => formatCurrency(value)}
+                    cursor={{ fill: chartColors.cursor }}
+                    formatter={(value) => formatCurrency(Number(value ?? 0))}
                   />
-                  <Bar dataKey="totalCost" fill="#38bdf8" radius={[0, 10, 10, 0]} />
+                  <Bar
+                    dataKey="totalCost"
+                    fill="url(#closingResponsibleCostGradient)"
+                    radius={[0, 12, 12, 0]}
+                    maxBarSize={28}
+                  />
                 </BarChart>
               </ResponsiveContainer>
-            </div>
+            </ChartFrame>
           )}
         </Card>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-3">
-        <Card className={`${reportPanelClass} xl:col-span-2`}>
+      <div className="grid gap-4 2xl:grid-cols-3">
+        <Card className={`${reportPanelClass} 2xl:col-span-2`}>
           <div className="mb-5">
             <p className="text-xs uppercase tracking-[0.22em] text-slate-500">
               Rotas do fechamento
@@ -956,7 +1071,7 @@ export default function MonthlyClosingPage() {
                 {analytics.filteredRefuels.slice(0, 8).map((refuel) => (
                   <div
                     key={refuel.id}
-                    className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-white/[0.03]"
+                    className="app-inline-stat p-3"
                   >
                     <p className="font-medium text-slate-950 dark:text-white">{refuel.vehiclePlate}</p>
                     <p className="text-xs text-slate-400">
@@ -991,7 +1106,7 @@ export default function MonthlyClosingPage() {
                 {analytics.filteredMaintenances.slice(0, 8).map((maintenance) => (
                   <div
                     key={maintenance.id}
-                    className="rounded-2xl border border-slate-200 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-white/[0.03]"
+                    className="app-inline-stat p-3"
                   >
                     <p className="font-medium text-slate-950 dark:text-white">
                       {maintenance.vehiclePlate}

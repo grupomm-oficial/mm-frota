@@ -7,11 +7,12 @@ import { cn } from "@/lib/utils";
 interface MetricCardProps {
   label: string;
   value: string;
-  helper: string;
+  helper?: string;
   icon: LucideIcon;
   accent?: "yellow" | "blue" | "green" | "red" | "slate";
   aside?: ReactNode;
   className?: string;
+  size?: "default" | "hero";
 }
 
 const accentClasses = {
@@ -35,33 +36,57 @@ export function MetricCard({
   accent = "blue",
   aside,
   className,
+  size = "default",
 }: MetricCardProps) {
+  const isHero = size === "hero";
+
   return (
-    <Card className={cn("app-panel-muted gap-0 p-4 md:p-5", className)}>
-      <div className="flex items-start justify-between gap-4">
-        <div className="space-y-2">
+    <Card
+      className={cn(
+        "app-panel-muted min-w-0 max-w-full gap-0 overflow-hidden",
+        isHero ? "p-5 md:p-6" : "p-4",
+        className
+      )}
+    >
+      <div className="flex min-w-0 items-start justify-between gap-4">
+        <div className="min-w-0 space-y-2">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
             {label}
           </p>
-          <p className="text-2xl font-semibold tracking-tight text-slate-950 dark:text-white md:text-[2rem]">
+          <p
+            className={cn(
+              "min-w-0 break-words font-semibold tracking-tight text-slate-950 dark:text-white",
+              isHero
+                ? "text-[clamp(1.85rem,3vw,2.7rem)] leading-[1.02]"
+                : "text-[clamp(1.55rem,2.3vw,2.15rem)] leading-tight"
+            )}
+          >
             {value}
           </p>
-          <p className="max-w-[18rem] text-sm leading-6 text-slate-500 dark:text-slate-400">
-            {helper}
-          </p>
+          {helper ? (
+            <p
+              className={cn(
+                "max-w-full text-slate-500 line-clamp-2 dark:text-slate-400",
+                isHero ? "text-sm leading-6" : "text-xs leading-5"
+              )}
+            >
+              {helper}
+            </p>
+          ) : null}
         </div>
 
         <div
           className={cn(
-            "flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border",
+            "flex shrink-0 items-center justify-center rounded-2xl border",
+            isHero ? "h-11 w-11 md:h-12 md:w-12" : "h-10 w-10",
             accentClasses[accent]
           )}
         >
-          <Icon className="h-5 w-5" />
+          <Icon className={isHero ? "h-5 w-5" : "h-4 w-4"} />
         </div>
       </div>
 
-      {aside ? <div className="mt-4">{aside}</div> : null}
+      {aside ? <div className={isHero ? "mt-4" : "mt-3"}>{aside}</div> : null}
     </Card>
   );
 }

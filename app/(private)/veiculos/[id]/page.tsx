@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useState, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { db } from "@/lib/firebase";
 import {
@@ -141,6 +141,81 @@ interface RouteItem {
   cancelReason?: string | null;
 }
 
+interface VehicleDocData {
+  plate: string;
+  model: string;
+  storeId: string;
+  status?: VehicleStatus;
+  currentKm?: number;
+  vehicleNotes?: string | null;
+  generalNotes?: string | null;
+  notes?: string | null;
+  observacoesGerais?: string | null;
+  responsibleUserId?: string;
+  responsibleUserName?: string;
+  responsibleUserIds?: string[];
+  responsibleUsers?: VehicleResponsibleUser[];
+}
+
+interface FuelingDocData {
+  date: string;
+  odometerKm?: number | string;
+  liters?: number | string;
+  total?: number | string;
+  pricePerL?: number | string;
+  responsibleUserName?: string | null;
+  stationName?: string | null;
+  notes?: string | null;
+  observacoes?: string | null;
+  updatedAt?: string | null;
+  updatedByName?: string | null;
+  editReason?: string | null;
+}
+
+interface MaintenanceDocData {
+  date: string;
+  odometerKm?: number | string;
+  type: string;
+  cost?: number | string;
+  responsibleUserName?: string | null;
+  workshopName?: string | null;
+  workshop?: string | null;
+  status?: "em_andamento" | "concluida";
+  endKm?: number | null;
+  notes?: string | null;
+  observacoes?: string | null;
+  description?: string | null;
+  obs?: string | null;
+  updatedAt?: string | null;
+  updatedByName?: string | null;
+  editReason?: string | null;
+}
+
+interface RouteDocData {
+  driverName: string;
+  origem?: string | null;
+  destino?: string | null;
+  startKm?: number | string;
+  endKm?: number | null;
+  startAt?: string | null;
+  endAt?: string | null;
+  status?: "em_andamento" | "finalizada" | "cancelada";
+  observacoes?: string | null;
+  notes?: string | null;
+  updatedAt?: string | null;
+  updatedByName?: string | null;
+  editReason?: string | null;
+  canceledAt?: string | null;
+  canceledByName?: string | null;
+  cancelReason?: string | null;
+}
+
+type PdfWithAutoTable = jsPDF & {
+  lastAutoTable?: {
+    finalY?: number;
+  };
+};
+
 // Helper: retorna início e fim do mês atual no formato YYYY-MM-DD
 function getCurrentMonthRange() {
   const now = new Date();
@@ -189,6 +264,10 @@ function formatDuration(start?: string | null, end?: string | null) {
   const minutes = totalMinutes % 60;
 
   return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+}
+
+function getAutoTableFinalY(docPdf: jsPDF, fallbackY: number) {
+  return (docPdf as PdfWithAutoTable).lastAutoTable?.finalY ?? fallbackY;
 }
 
 export default function VehicleDetailsPage() {
@@ -253,7 +332,7 @@ export default function VehicleDetailsPage() {
           return;
         }
 
-        const vData = vehicleSnap.data() as any;
+        const vData = vehicleSnap.data() as VehicleDocData;
         const generalNotesFromDb =
           vData.vehicleNotes ??
           vData.generalNotes ??
@@ -301,7 +380,7 @@ export default function VehicleDetailsPage() {
           generalNotes: generalNotesFromDb,
         };
 
-        // segurança: user comum só vê se for um dos responsáveis
+        // Seguranca: user comum ve apenas veiculos onde esta vinculado.
         if (user.role !== "admin") {
           const isExplicitResponsible =
             !!vehicleObj.responsibleUserId &&
@@ -334,7 +413,7 @@ export default function VehicleDetailsPage() {
         );
 
         const fList: Fueling[] = fuelSnap.docs.map((d) => {
-          const data = d.data() as any;
+          const data = d.data() as FuelingDocData;
           return {
             id: d.id,
             date: data.date,
@@ -367,7 +446,7 @@ export default function VehicleDetailsPage() {
         );
 
         const mList: Maintenance[] = maintSnap.docs.map((d) => {
-          const data = d.data() as any;
+          const data = d.data() as MaintenanceDocData;
           return {
             id: d.id,
             date: data.date,
@@ -403,7 +482,7 @@ export default function VehicleDetailsPage() {
         );
 
         const rList: RouteItem[] = routesSnap.docs.map((d) => {
-          const data = d.data() as any;
+          const data = d.data() as RouteDocData;
           return {
             id: d.id,
             driverName: data.driverName,
@@ -437,7 +516,7 @@ export default function VehicleDetailsPage() {
   }, [user, params?.id]);
 
   // ===== Helper de filtro por período =====
-  function isWithinRange(isoDate: string | null | undefined) {
+  const isWithinRange = useCallback((isoDate: string | null | undefined) => {
     if (!isoDate) return false;
     const d = new Date(isoDate);
     if (startDate) {
@@ -449,23 +528,23 @@ export default function VehicleDetailsPage() {
       if (d > to) return false;
     }
     return true;
-  }
+  }, [endDate, startDate]);
 
   // ===== Arrays filtrados pelo período =====
   const filteredFuelings = useMemo(() => {
     if (!startDate && !endDate) return fuelings;
     return fuelings.filter((f) => isWithinRange(f.date));
-  }, [fuelings, startDate, endDate]);
+  }, [fuelings, isWithinRange, startDate, endDate]);
 
   const filteredMaintenances = useMemo(() => {
     if (!startDate && !endDate) return maintenances;
     return maintenances.filter((m) => isWithinRange(m.date));
-  }, [maintenances, startDate, endDate]);
+  }, [maintenances, isWithinRange, startDate, endDate]);
 
   const filteredRoutes = useMemo(() => {
     if (!startDate && !endDate) return routes;
     return routes.filter((r) => isWithinRange(r.startAt || r.endAt || null));
-  }, [routes, startDate, endDate]);
+  }, [routes, isWithinRange, startDate, endDate]);
 
   // ===== Métricas do PERÍODO =====
   const totalCombustivel = useMemo(
@@ -752,8 +831,7 @@ export default function VehicleDetailsPage() {
         headStyles: { fillColor: [250, 204, 21], textColor: 0 },
       });
 
-      // @ts-ignore
-      currentY = (docPdf as any).lastAutoTable.finalY + 10;
+      currentY = getAutoTableFinalY(docPdf, currentY) + 10;
 
       // Abastecimentos do período
       if (filteredFuelings.length > 0) {
@@ -777,8 +855,7 @@ export default function VehicleDetailsPage() {
           headStyles: { fillColor: [15, 23, 42], textColor: [250, 250, 250] },
         });
 
-        // @ts-ignore
-        currentY = (docPdf as any).lastAutoTable.finalY + 8;
+        currentY = getAutoTableFinalY(docPdf, currentY) + 8;
       }
 
       // Manutenções do período
@@ -803,8 +880,7 @@ export default function VehicleDetailsPage() {
           headStyles: { fillColor: [15, 23, 42], textColor: [250, 250, 250] },
         });
 
-        // @ts-ignore
-        currentY = (docPdf as any).lastAutoTable.finalY + 8;
+        currentY = getAutoTableFinalY(docPdf, currentY) + 8;
       }
 
       // Rotas do período
@@ -1137,7 +1213,7 @@ export default function VehicleDetailsPage() {
             </div>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[180px_180px_minmax(0,1fr)]">
+          <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-[180px_180px_minmax(0,1fr)]">
             <div className="space-y-2">
               <label className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
                 Data inicial
@@ -1188,7 +1264,7 @@ export default function VehicleDetailsPage() {
         </Card>
       ) : (
         <>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
             <MetricCard
               label="Status atual"
               value={statusText}
@@ -1219,7 +1295,7 @@ export default function VehicleDetailsPage() {
             />
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_380px]">
+          <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.45fr)_380px]">
             <div className="space-y-4">
               <Card className="app-panel p-5">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1671,8 +1747,8 @@ export default function VehicleDetailsPage() {
                       })}
                     </div>
 
-                    <div className="mt-4 hidden overflow-x-auto md:block">
-                      <table className="min-w-[880px] w-full border-collapse text-sm">
+                    <div className="app-table-wrap mt-4 hidden md:block">
+                      <table className="app-table min-w-[880px]">
                         <thead>
                           <tr className="border-b border-slate-200 text-left text-slate-500 dark:border-white/10 dark:text-slate-400">
                             <th className="py-3 pr-3 font-medium">Data</th>

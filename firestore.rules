@@ -23,13 +23,25 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
+    function currentUserIsActive() {
+      return hasCurrentUserDoc() && (
+        !currentUserData().keys().hasAny(["active"]) ||
+        currentUserData().active == true
+      );
+    }
+
+    function isAppUser() {
+      return isSignedIn() &&
+        currentUserIsActive();
+    }
+
     function isAdmin() {
-      return hasCurrentUserDoc() &&
+      return currentUserIsActive() &&
         currentUserData().role == "admin";
     }
 
     function userStoreId() {
-      return hasCurrentUserDoc() ? currentUserData().storeId : null;
+      return currentUserIsActive() ? currentUserData().storeId : null;
     }
 
     function hasStore(data) {
@@ -54,7 +66,7 @@ service cloud.firestore {
     }
 
     function isResponsibleIn(data) {
-      return isSignedIn() && (
+      return isAppUser() && (
         (
           hasResponsibleId(data) &&
           data.responsibleUserId == request.auth.uid
@@ -64,6 +76,11 @@ service cloud.firestore {
           data.responsibleUserIds.hasAny([request.auth.uid])
         )
       );
+    }
+
+    function canAccessVehicleData(data) {
+      return isAdmin() ||
+        isResponsibleIn(data);
     }
 
     function hasVehicleId(data) {
@@ -82,12 +99,9 @@ service cloud.firestore {
     }
 
     function canOperateLinkedVehicle(data) {
-      return isSignedIn() &&
+      return isAppUser() &&
         linkedVehicleExists(data) &&
-        (
-          isAdmin() ||
-          isResponsibleIn(linkedVehicleData(data))
-        );
+        canAccessVehicleData(linkedVehicleData(data));
     }
 
     function matchesLinkedVehicleStore(data) {
@@ -95,6 +109,25 @@ service cloud.firestore {
         linkedVehicleExists(data) &&
         linkedVehicleData(data).keys().hasAny(["storeId"]) &&
         linkedVehicleData(data).storeId == data.storeId;
+    }
+
+    function hasNonEmptyString(value) {
+      return value is string && value.size() > 0;
+    }
+
+    function adminAuditFieldsAreValid() {
+      return isAdmin() &&
+        request.resource.data.keys().hasAll([
+          "updatedAt",
+          "updatedById",
+          "updatedByName",
+          "editReason"
+        ]) &&
+        hasNonEmptyString(request.resource.data.updatedAt) &&
+        request.resource.data.updatedById is string &&
+        request.resource.data.updatedById == request.auth.uid &&
+        hasNonEmptyString(request.resource.data.updatedByName) &&
+        hasNonEmptyString(request.resource.data.editReason);
     }
 
     // ============================
@@ -160,10 +193,158 @@ service cloud.firestore {
       ]);
     }
 
+    function routeAdminCorrectionAllowed() {
+      let changed = request.resource.data.diff(resource.data).changedKeys();
+      return adminAuditFieldsAreValid() &&
+        linkedVehicleExists(request.resource.data) &&
+        matchesLinkedVehicleStore(request.resource.data) &&
+        changed.hasOnly([
+          "vehicleId",
+          "vehiclePlate",
+          "vehicleModel",
+          "storeId",
+          "driverId",
+          "driverName",
+          "origem",
+          "destino",
+          "startKm",
+          "endKm",
+          "startAt",
+          "endAt",
+          "distanceKm",
+          "status",
+          "responsibleUserId",
+          "responsibleUserName",
+          "observacoes",
+          "finishedAt",
+          "finishedById",
+          "finishedByName",
+          "canceledAt",
+          "canceledById",
+          "canceledByName",
+          "cancelReason",
+          "updatedObsAt",
+          "updatedObsById",
+          "updatedObsByName",
+          "updatedAt",
+          "updatedById",
+          "updatedByName",
+          "editReason"
+        ]) &&
+        request.resource.data.vehicleId is string &&
+        request.resource.data.driverId is string &&
+        request.resource.data.startKm is number &&
+        (
+          !request.resource.data.keys().hasAny(["endKm"]) ||
+          request.resource.data.endKm == null ||
+          request.resource.data.endKm is number
+        ) &&
+        (
+          !request.resource.data.keys().hasAny(["distanceKm"]) ||
+          request.resource.data.distanceKm == null ||
+          request.resource.data.distanceKm is number
+        ) &&
+        (
+          !request.resource.data.keys().hasAny(["cancelReason"]) ||
+          request.resource.data.cancelReason == null ||
+          request.resource.data.cancelReason is string
+        );
+    }
+
+    function fuelingAdminCorrectionAllowed() {
+      let changed = request.resource.data.diff(resource.data).changedKeys();
+      return adminAuditFieldsAreValid() &&
+        linkedVehicleExists(request.resource.data) &&
+        matchesLinkedVehicleStore(request.resource.data) &&
+        changed.hasOnly([
+          "vehicleId",
+          "vehiclePlate",
+          "vehicleModel",
+          "storeId",
+          "responsibleUserId",
+          "responsibleUserName",
+          "date",
+          "odometerKm",
+          "liters",
+          "pricePerL",
+          "total",
+          "stationName",
+          "updatedAt",
+          "updatedById",
+          "updatedByName",
+          "editReason"
+        ]) &&
+        request.resource.data.vehicleId is string &&
+        request.resource.data.odometerKm is number &&
+        request.resource.data.odometerKm > 0 &&
+        request.resource.data.liters is number &&
+        request.resource.data.liters > 0 &&
+        request.resource.data.pricePerL is number &&
+        request.resource.data.pricePerL > 0 &&
+        request.resource.data.total is number &&
+        request.resource.data.total > 0 &&
+        (
+          !request.resource.data.keys().hasAny(["stationName"]) ||
+          request.resource.data.stationName == null ||
+          request.resource.data.stationName is string
+        );
+    }
+
+    function maintenanceAdminCorrectionAllowed() {
+      let changed = request.resource.data.diff(resource.data).changedKeys();
+      return adminAuditFieldsAreValid() &&
+        linkedVehicleExists(request.resource.data) &&
+        matchesLinkedVehicleStore(request.resource.data) &&
+        changed.hasOnly([
+          "vehicleId",
+          "vehiclePlate",
+          "vehicleModel",
+          "storeId",
+          "responsibleUserId",
+          "responsibleUserName",
+          "date",
+          "odometerKm",
+          "cost",
+          "type",
+          "workshopName",
+          "notes",
+          "status",
+          "endKm",
+          "endDate",
+          "updatedAt",
+          "updatedById",
+          "updatedByName",
+          "editReason"
+        ]) &&
+        request.resource.data.vehicleId is string &&
+        request.resource.data.odometerKm is number &&
+        request.resource.data.odometerKm > 0 &&
+        request.resource.data.cost is number &&
+        request.resource.data.cost > 0 &&
+        hasNonEmptyString(request.resource.data.type) &&
+        (
+          !request.resource.data.keys().hasAny(["endKm"]) ||
+          request.resource.data.endKm == null ||
+          request.resource.data.endKm is number
+        ) &&
+        (
+          !request.resource.data.keys().hasAny(["workshopName"]) ||
+          request.resource.data.workshopName == null ||
+          request.resource.data.workshopName is string
+        ) &&
+        (
+          !request.resource.data.keys().hasAny(["notes"]) ||
+          request.resource.data.notes == null ||
+          request.resource.data.notes is string
+        );
+    }
+
     // ============================
     // USERS
     // ============================
     match /users/{userId} {
+      // Mantem leitura do proprio documento mesmo para inativos,
+      // para o app conseguir identificar o bloqueio e encerrar a sessao.
       allow read: if isSelf(userId) || isAdmin();
 
       allow create, delete: if isAdmin();
@@ -180,37 +361,37 @@ service cloud.firestore {
     // USERNAMES
     // ============================
     match /usernames/{username} {
-      allow read: if true;
+      // Login ainda resolve um username conhecido por get direto.
+      // Listagens/queries ficam bloqueadas para reduzir enumeracao de acessos.
+      allow get: if true;
+      allow list: if false;
       allow create, update, delete: if isAdmin();
     }
 
     // ============================
     // VEHICLES
-    // - leitura segue aberta para logados porque varias telas
-    //   ainda carregam a colecao inteira e filtram no client.
-    // - escrita operacional liberada so para admin ou responsavel.
+    // - responsaveis leem apenas veiculos vinculados diretamente a eles.
+    // - escrita operacional liberada so para admin ou responsavel com acesso ao veiculo.
     // ============================
     match /vehicles/{vehicleId} {
-      allow read: if isSignedIn();
+      allow read: if canAccessVehicleData(resource.data);
 
       allow create, delete: if isAdmin();
 
       allow update: if isAdmin() || (
-        isResponsibleIn(resource.data) &&
+        canAccessVehicleData(resource.data) &&
         vehicleOperationalUpdateOnly()
       );
     }
 
     // ============================
     // DRIVERS
-    // - leitura compartilhada por loja
+    // - leitura operacional liberada para usuarios ativos
     // - admin gerencia tudo
     // - responsavel da mesma loja pode criar/editar nome e status
     // ============================
     match /drivers/{driverId} {
-      allow read: if isAdmin() ||
-        isSameStore(resource.data) ||
-        (isResponsibleIn(resource.data) && isSameStore(resource.data));
+      allow read: if isAppUser();
 
       allow create: if isAdmin() || (
         isResponsibleIn(request.resource.data) &&
@@ -231,12 +412,13 @@ service cloud.firestore {
 
     // ============================
     // ROUTES
-    // - leitura mantida para qualquer logado por compatibilidade
     // - criacao exige usuario responsavel e vinculo com veiculo permitido
     // - update comum cobre finalizar, cancelar e observacoes
     // ============================
     match /routes/{routeId} {
-      allow read: if isSignedIn();
+      allow read: if isAdmin() ||
+        isResponsibleIn(resource.data) ||
+        canOperateLinkedVehicle(resource.data);
 
       allow create: if isAdmin() || (
         isResponsibleIn(request.resource.data) &&
@@ -244,25 +426,30 @@ service cloud.firestore {
         matchesLinkedVehicleStore(request.resource.data)
       );
 
-      allow update: if isAdmin() || (
-        routeOperationalUpdateOnly() &&
+      allow update: if
         (
-          isResponsibleIn(resource.data) ||
-          canOperateLinkedVehicle(resource.data)
-        )
-      );
+          isAdmin() &&
+          routeAdminCorrectionAllowed()
+        ) || (
+          routeOperationalUpdateOnly() &&
+          (
+            isResponsibleIn(resource.data) ||
+            canOperateLinkedVehicle(resource.data)
+          )
+        );
 
       allow delete: if isAdmin();
     }
 
     // ============================
     // FUELINGS
-    // - leitura mantida aberta para logados por compatibilidade
     // - criacao exige vinculo com veiculo permitido
     // - edicao/exclusao seguem admin-only como no front atual
     // ============================
     match /fuelings/{fuelingId} {
-      allow read: if isSignedIn();
+      allow read: if isAdmin() ||
+        isResponsibleIn(resource.data) ||
+        canOperateLinkedVehicle(resource.data);
 
       allow create: if isAdmin() || (
         isResponsibleIn(request.resource.data) &&
@@ -270,17 +457,19 @@ service cloud.firestore {
         matchesLinkedVehicleStore(request.resource.data)
       );
 
-      allow update, delete: if isAdmin();
+      allow update: if isAdmin() && fuelingAdminCorrectionAllowed();
+      allow delete: if isAdmin();
     }
 
     // ============================
     // MAINTENANCES
-    // - leitura mantida aberta para logados por compatibilidade
     // - criacao exige vinculo com veiculo permitido
     // - update comum cobre conclusao de manutencao
     // ============================
     match /maintenances/{maintenanceId} {
-      allow read: if isSignedIn();
+      allow read: if isAdmin() ||
+        isResponsibleIn(resource.data) ||
+        canOperateLinkedVehicle(resource.data);
 
       allow create: if isAdmin() || (
         isResponsibleIn(request.resource.data) &&
@@ -288,13 +477,17 @@ service cloud.firestore {
         matchesLinkedVehicleStore(request.resource.data)
       );
 
-      allow update: if isAdmin() || (
-        maintenanceCompletionUpdateOnly() &&
+      allow update: if
         (
-          isResponsibleIn(resource.data) ||
-          canOperateLinkedVehicle(resource.data)
-        )
-      );
+          isAdmin() &&
+          maintenanceAdminCorrectionAllowed()
+        ) || (
+          maintenanceCompletionUpdateOnly() &&
+          (
+            isResponsibleIn(resource.data) ||
+            canOperateLinkedVehicle(resource.data)
+          )
+        );
 
       allow delete: if isAdmin();
     }
@@ -303,7 +496,7 @@ service cloud.firestore {
     // MONTHLY SUMMARIES
     // ============================
     match /monthlySummaries/{summaryId} {
-      allow read: if isSignedIn();
+      allow read: if isAppUser();
       allow create, update, delete: if isAdmin();
     }
   }

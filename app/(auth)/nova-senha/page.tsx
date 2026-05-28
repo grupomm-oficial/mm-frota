@@ -27,6 +27,11 @@ export default function NovaSenhaPage() {
   useEffect(() => {
     if (!loading && !user) {
       router.replace("/login");
+      return;
+    }
+
+    if (!loading && user && !user.mustChangePassword) {
+      router.replace("/rotas");
     }
   }, [user, loading, router]);
 
@@ -45,6 +50,11 @@ export default function NovaSenhaPage() {
         return;
       }
 
+      if (senha1.length < 8) {
+        setErro("Use uma senha com pelo menos 8 caracteres.");
+        return;
+      }
+
       if (!auth.currentUser || !user) {
         setErro("Sessao expirada. Faca login novamente.");
         router.replace("/login");
@@ -57,7 +67,7 @@ export default function NovaSenhaPage() {
       setOk("Senha alterada com sucesso.");
 
       setTimeout(() => {
-        router.push("/dashboard");
+        router.replace("/rotas");
       }, 1000);
     } catch (error) {
       console.error("Erro ao trocar senha:", error);

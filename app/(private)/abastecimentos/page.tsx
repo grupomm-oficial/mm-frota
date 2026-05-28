@@ -29,6 +29,22 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { StatusBanner } from "@/components/layout/StatusBanner";
 import { ActionIconButton } from "@/components/ui/action-icon-button";
 import {
+  getNumberValue,
+  getOptionalNumberValue,
+  getOptionalStringValue,
+  getStringArrayValue,
+  getStringValue,
+  toFirestoreRecord,
+} from "@/lib/firestore-fields";
+import {
+  getRecordDocsForUserByVehicles,
+  getVehicleDocsForUser,
+} from "@/lib/firestore-access";
+import {
+  getCanonicalStoreOptions,
+  normalizeStoreKey,
+} from "@/lib/store-utils";
+import {
   Filter,
   Fuel,
   Gauge,
@@ -75,6 +91,94 @@ interface Fueling {
   updatedById?: string | null;
   updatedByName?: string | null;
   editReason?: string | null;
+}
+
+function parseVehicleOption(id: string, value: unknown): VehicleOption {
+  const data = toFirestoreRecord(value);
+
+  return {
+    id,
+    plate: getStringValue(data.plate),
+    model: getStringValue(data.model),
+    storeId: getStringValue(data.storeId),
+    currentKm: getOptionalNumberValue(data.currentKm) ?? undefined,
+    status:
+      data.status === "em_rota" || data.status === "manutencao"
+        ? data.status
+        : "disponivel",
+    responsibleUserId: getOptionalStringValue(data.responsibleUserId) ?? undefined,
+    responsibleUserName: getOptionalStringValue(data.responsibleUserName) ?? undefined,
+    responsibleUserIds: getStringArrayValue(data.responsibleUserIds),
+  };
+}
+
+function parseFueling(id: string, value: unknown): Fueling {
+  const data = toFirestoreRecord(value);
+
+  return {
+    id,
+    vehicleId: getStringValue(data.vehicleId),
+    vehiclePlate: getStringValue(data.vehiclePlate),
+    vehicleModel: getStringValue(data.vehicleModel),
+    storeId: getStringValue(data.storeId),
+    responsibleUserId: getStringValue(data.responsibleUserId),
+    responsibleUserName: getStringValue(data.responsibleUserName),
+    date: getStringValue(data.date),
+    odometerKm: getNumberValue(data.odometerKm),
+    liters: getNumberValue(data.liters),
+    pricePerL: getNumberValue(data.pricePerL),
+    total: getNumberValue(data.total),
+    stationName: getOptionalStringValue(data.stationName),
+    updatedAt: getOptionalStringValue(data.updatedAt),
+    updatedById: getOptionalStringValue(data.updatedById),
+    updatedByName: getOptionalStringValue(data.updatedByName),
+    editReason: getOptionalStringValue(data.editReason),
+  };
+}
+
+function getCurrentMonthDateRange() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+
+  const toInputDate = (date: Date) => {
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, "0");
+    const dd = String(date.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  return {
+    start: toInputDate(new Date(year, month, 1)),
+    end: toInputDate(new Date(year, month + 1, 0)),
+  };
+}
+
+function getVehicleStatusLabel(status?: VehicleOption["status"]) {
+  if (status === "em_rota") return "Em rota";
+  if (status === "manutencao") return "Em manutencao";
+  return "Disponivel";
+}
+
+function getResponsibleCoverageCount(
+  vehicle?: Pick<VehicleOption, "responsibleUserId" | "responsibleUserIds"> | null
+) {
+  if (!vehicle) return 0;
+  if (vehicle.responsibleUserIds?.length) return vehicle.responsibleUserIds.length;
+  return vehicle.responsibleUserId ? 1 : 0;
+}
+
+function canUserUseVehicle(
+  user: { id: string; role?: string; storeId?: string | null } | null | undefined,
+  vehicle: VehicleOption
+) {
+  if (!user) return false;
+  if (user.role === "admin") return true;
+
+  const singleMatch = vehicle.responsibleUserId === user.id;
+  const multiMatch = vehicle.responsibleUserIds?.includes(user.id) ?? false;
+
+  return singleMatch || multiMatch;
 }
 
 export default function AbastecimentosPage() {
@@ -125,17 +229,6 @@ export default function AbastecimentosPage() {
     }
   }, [user, router]);
 
-  // helper: verifica se o usuário pode usar / ver um veículo
-  function userCanUseVehicle(vehicle: VehicleOption): boolean {
-    if (!user) return false;
-    if (user.role === "admin") return true;
-
-    const singleMatch = vehicle.responsibleUserId === user.id;
-    const multiMatch = vehicle.responsibleUserIds?.includes(user.id) ?? false;
-
-    return singleMatch || multiMatch;
-  }
-
   function toDateTimeLocalValue(value?: string | null) {
     const source = value ? new Date(value) : new Date();
     if (Number.isNaN(source.getTime())) return "";
@@ -146,22 +239,9 @@ export default function AbastecimentosPage() {
 
   // Define período padrão = mês corrente
   useEffect(() => {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth(); // 0-11
-
-    const first = new Date(year, month, 1);
-    const last = new Date(year, month + 1, 0);
-
-    const toInputDate = (d: Date) => {
-      const yyyy = d.getFullYear();
-      const mm = String(d.getMonth() + 1).padStart(2, "0");
-      const dd = String(d.getDate()).padStart(2, "0");
-      return `${yyyy}-${mm}-${dd}`;
-    };
-
-    setStartFilter(toInputDate(first));
-    setEndFilter(toInputDate(last));
+    const { start, end } = getCurrentMonthDateRange();
+    setStartFilter(start);
+    setEndFilter(end);
   }, []);
 
   useEffect(() => {
@@ -171,58 +251,33 @@ export default function AbastecimentosPage() {
         setLoading(true);
         setErrorMsg("");
 
-        // ===== VEÃCULOS =====
-        const vehiclesSnap = await getDocs(collection(db, "vehicles"));
-        let vListAll: VehicleOption[] = vehiclesSnap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            plate: data.plate,
-            model: data.model,
-            storeId: data.storeId,
-            currentKm: data.currentKm,
-            status: data.status,
-            responsibleUserId: data.responsibleUserId,
-            responsibleUserName: data.responsibleUserName,
-            responsibleUserIds: Array.isArray(data.responsibleUserIds)
-              ? data.responsibleUserIds
-              : undefined,
-          };
-        });
+        const vehicleDocs = await getVehicleDocsForUser(db, user);
+        const vListAll = vehicleDocs.map((snapshot) =>
+          parseVehicleOption(snapshot.id, snapshot.data())
+        );
 
         let vList = vListAll;
         if (!isAdmin) {
-          vList = vListAll.filter((v) => userCanUseVehicle(v));
+          vList = vListAll.filter((v) => canUserUseVehicle(user, v));
         }
         setVehicles(vList);
 
-        // ===== ABASTECIMENTOS =====
-        const fuelingsSnap = await getDocs(
-          query(collection(db, "fuelings"), orderBy("date", "desc"))
-        );
+        const fuelingDocs = isAdmin
+          ? (
+              await getDocs(
+                query(collection(db, "fuelings"), orderBy("date", "desc"))
+              )
+            ).docs
+          : await getRecordDocsForUserByVehicles(
+              db,
+              "fuelings",
+              user,
+              vList.map((vehicle) => vehicle.id)
+            );
 
-        let fList: Fueling[] = fuelingsSnap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            vehicleId: data.vehicleId,
-            vehiclePlate: data.vehiclePlate,
-            vehicleModel: data.vehicleModel,
-            storeId: data.storeId,
-            responsibleUserId: data.responsibleUserId,
-            responsibleUserName: data.responsibleUserName,
-            date: data.date,
-            odometerKm: data.odometerKm,
-            liters: data.liters,
-            pricePerL: data.pricePerL,
-            total: data.total,
-            stationName: data.stationName ?? null,
-            updatedAt: data.updatedAt ?? null,
-            updatedById: data.updatedById ?? null,
-            updatedByName: data.updatedByName ?? null,
-            editReason: data.editReason ?? null,
-          };
-        });
+        let fList = fuelingDocs.map((snapshot) =>
+          parseFueling(snapshot.id, snapshot.data())
+        );
 
         if (!isAdmin) {
           const allowedVehicleIds = new Set(vList.map((v) => v.id));
@@ -234,7 +289,7 @@ export default function AbastecimentosPage() {
           );
         }
 
-        setFuelings(fList);
+        setFuelings(fList.sort((a, b) => (b.date || "").localeCompare(a.date || "")));
       } catch (error) {
         console.error("Erro ao carregar abastecimentos:", error);
         setErrorMsg("Erro ao carregar dados. Tente novamente.");
@@ -248,12 +303,7 @@ export default function AbastecimentosPage() {
 
   function resetForm() {
     setVehicleId("");
-    
-    // Data atual formatada para o input datetime-local
-    const now = new Date();
-    const offset = now.getTimezoneOffset() * 60000;
-    const localISOTime = new Date(now.getTime() - offset).toISOString().slice(0, 16);
-    setDate(localISOTime);
+    setDate(toDateTimeLocalValue());
 
     setOdometerKm("");
     setTotalValue("");
@@ -335,8 +385,13 @@ export default function AbastecimentosPage() {
         return;
       }
 
+      if (!vehicle.storeId) {
+        setErrorMsg("Este veiculo nao possui loja vinculada. Ajuste o cadastro antes de abastecer.");
+        return;
+      }
+
       // Permissão: precisa ser admin ou responsável pelo veículo
-      if (!userCanUseVehicle(vehicle)) {
+      if (!canUserUseVehicle(user, vehicle)) {
         setErrorMsg(
           "Você não tem permissão para registrar abastecimento para este veículo."
         );
@@ -384,6 +439,7 @@ export default function AbastecimentosPage() {
       }
 
       const nowISO = date || new Date().toISOString();
+      const nextStationName = stationName.trim() || null;
 
       const newDoc = doc(collection(db, "fuelings"));
       const batch = writeBatch(db);
@@ -400,7 +456,7 @@ export default function AbastecimentosPage() {
         liters: lit,
         pricePerL: price,
         total,
-        stationName: stationName || null,
+        stationName: nextStationName,
       });
 
       // Atualiza KM atual do veículo
@@ -425,7 +481,7 @@ export default function AbastecimentosPage() {
           liters: lit,
           pricePerL: price,
           total,
-          stationName: stationName || null,
+          stationName: nextStationName,
         },
         ...prev,
       ]);
@@ -470,7 +526,6 @@ export default function AbastecimentosPage() {
     if (!editingFueling || !user || !isAdmin) return;
 
     try {
-      setSaving(true);
       setErrorMsg("");
       setSuccessMsg("");
 
@@ -485,10 +540,12 @@ export default function AbastecimentosPage() {
         return;
       }
 
-      const nextDate = editDate || toDateTimeLocalValue();
+      const nextDate = editDate || toDateTimeLocalValue(editingFueling.date);
       const nextOdometer = Number(editOdometerKm.replace(",", "."));
       const nextTotal = Number(editTotalValue.replace(",", "."));
       const nextPrice = Number(editPricePerL.replace(",", "."));
+      const nextStationName = editStationName.trim() || null;
+      const nextEditReason = editReason.trim();
 
       if (Number.isNaN(nextOdometer) || nextOdometer <= 0) {
         setErrorMsg("KM invalido.");
@@ -504,7 +561,37 @@ export default function AbastecimentosPage() {
       }
 
       const nextLiters = Number((nextTotal / nextPrice).toFixed(2));
+      const hasChanges =
+        nextDate !== (editingFueling.date || "") ||
+        nextOdometer !== editingFueling.odometerKm ||
+        nextTotal !== editingFueling.total ||
+        nextPrice !== editingFueling.pricePerL ||
+        nextStationName !== (editingFueling.stationName ?? null);
+
+      if (!hasChanges) {
+        setErrorMsg("Faça alguma alteracao antes de salvar a edicao.");
+        return;
+      }
+
+      if (!nextEditReason) {
+        setErrorMsg("Informe o motivo da alteracao para manter a auditoria do abastecimento.");
+        return;
+      }
+
+      const confirmed = window.confirm(
+        `Confirmar ajuste administrativo deste abastecimento?\n\nVeiculo: ${editingFueling.vehiclePlate}\nKM: ${editingFueling.odometerKm} -> ${nextOdometer}\nMotivo: ${nextEditReason}`
+      );
+
+      if (!confirmed) {
+        return;
+      }
+
+      setSaving(true);
+
       const updatedAt = new Date().toISOString();
+      const shouldSyncVehicleKm =
+        (vehicle.currentKm ?? 0) < nextOdometer ||
+        vehicle.currentKm === editingFueling.odometerKm;
 
       const batch = writeBatch(db);
       batch.update(doc(db, "fuelings", editingFueling.id), {
@@ -513,14 +600,14 @@ export default function AbastecimentosPage() {
         liters: nextLiters,
         pricePerL: nextPrice,
         total: nextTotal,
-        stationName: editStationName || null,
+        stationName: nextStationName,
         updatedAt,
         updatedById: user.id,
         updatedByName: user.name,
-        editReason: editReason || null,
+        editReason: nextEditReason,
       });
 
-      if ((vehicle.currentKm ?? 0) < nextOdometer) {
+      if (shouldSyncVehicleKm) {
         batch.update(doc(db, "vehicles", vehicle.id), {
           currentKm: nextOdometer,
         });
@@ -539,11 +626,11 @@ export default function AbastecimentosPage() {
                   liters: nextLiters,
                   pricePerL: nextPrice,
                   total: nextTotal,
-                  stationName: editStationName || null,
+                  stationName: nextStationName,
                   updatedAt,
                   updatedById: user.id,
                   updatedByName: user.name,
-                  editReason: editReason || null,
+                  editReason: nextEditReason,
                 }
               : item
           )
@@ -553,7 +640,7 @@ export default function AbastecimentosPage() {
           )
       );
 
-      if ((vehicle.currentKm ?? 0) < nextOdometer) {
+      if (shouldSyncVehicleKm) {
         setVehicles((prev) =>
           prev.map((item) =>
             item.id === vehicle.id ? { ...item, currentKm: nextOdometer } : item
@@ -584,11 +671,7 @@ export default function AbastecimentosPage() {
   );
 
   const storeFilterOptions = useMemo(() => {
-    const stores = new Set<string>();
-    fuelings.forEach((fueling) => {
-      if (fueling.storeId) stores.add(fueling.storeId);
-    });
-    return Array.from(stores).sort();
+    return getCanonicalStoreOptions(fuelings.map((fueling) => fueling.storeId));
   }, [fuelings]);
 
   const responsibleFilterOptions = useMemo(() => {
@@ -629,7 +712,10 @@ export default function AbastecimentosPage() {
         return false;
       }
 
-      if (storeFilter !== "todas" && (f.storeId || "") !== storeFilter) {
+      if (
+        storeFilter !== "todas" &&
+        normalizeStoreKey(f.storeId) !== storeFilter
+      ) {
         return false;
       }
 
@@ -692,6 +778,11 @@ export default function AbastecimentosPage() {
     return Number((tot / price).toFixed(2));
   })();
 
+  const selectedVehicle = useMemo(
+    () => vehicles.find((vehicle) => vehicle.id === vehicleId) ?? null,
+    [vehicles, vehicleId]
+  );
+
   const editingVehicle = useMemo(
     () =>
       editingFueling
@@ -700,9 +791,24 @@ export default function AbastecimentosPage() {
     [vehicles, editingFueling]
   );
 
+  const defaultDateRange = getCurrentMonthDateRange();
+  const hasActiveFilters =
+    searchFilter.trim().length > 0 ||
+    vehicleFilter !== "todos" ||
+    storeFilter !== "todas" ||
+    responsibleFilter !== "todos" ||
+    startFilter !== defaultDateRange.start ||
+    endFilter !== defaultDateRange.end;
+
+  const currentScopeLabel =
+    filteredFuelings.length === fuelings.length
+      ? `${fuelings.length} abastecimento(s) no recorte padrao`
+      : `${filteredFuelings.length} de ${fuelings.length} abastecimento(s) visiveis`;
+
   function handleClearFilter() {
-    setStartFilter("");
-    setEndFilter("");
+    const { start, end } = getCurrentMonthDateRange();
+    setStartFilter(start);
+    setEndFilter(end);
     setSearchFilter("");
     setVehicleFilter("todos");
     setStoreFilter("todas");
@@ -777,7 +883,7 @@ export default function AbastecimentosPage() {
       {errorMsg ? <StatusBanner tone="error">{errorMsg}</StatusBanner> : null}
       {successMsg ? <StatusBanner tone="success">{successMsg}</StatusBanner> : null}
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
         <MetricCard
           label="Registros"
           value={String(filteredFuelings.length)}
@@ -825,6 +931,10 @@ export default function AbastecimentosPage() {
 
             <div className="flex flex-wrap gap-2">
               <span className="app-chip">
+                <span className="h-2 w-2 rounded-full bg-slate-300" />
+                {currentScopeLabel}
+              </span>
+              <span className="app-chip">
                 <span className="h-2 w-2 rounded-full bg-yellow-300" />
                 {filteredFuelings.length} exibidos
               </span>
@@ -837,8 +947,8 @@ export default function AbastecimentosPage() {
         </div>
 
         <div className="space-y-4 p-4 md:p-5">
-          <div className="grid gap-3 xl:grid-cols-5">
-            <div className="relative xl:col-span-2">
+          <div className="grid gap-3 2xl:grid-cols-5">
+            <div className="relative 2xl:col-span-2">
               <Input
                 value={searchFilter}
                 onChange={(e) => setSearchFilter(e.target.value)}
@@ -868,8 +978,8 @@ export default function AbastecimentosPage() {
             >
               <option value="todas">Todas as lojas</option>
               {storeFilterOptions.map((store) => (
-                <option key={store} value={store}>
-                  {store}
+                <option key={store.key} value={store.key}>
+                  {store.label}
                 </option>
               ))}
             </select>
@@ -912,9 +1022,11 @@ export default function AbastecimentosPage() {
             </div>
 
             <div className="flex items-end">
-              <Button type="button" variant="outline" onClick={handleClearFilter}>
-                Limpar filtros
-              </Button>
+              {hasActiveFilters ? (
+                <Button type="button" variant="outline" onClick={handleClearFilter}>
+                  Limpar filtros
+                </Button>
+              ) : null}
             </div>
           </div>
 
@@ -1110,12 +1222,44 @@ export default function AbastecimentosPage() {
                   </div>
                 </div>
 
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="app-panel-muted p-4">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                      Veiculo selecionado
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
+                      {selectedVehicle
+                        ? `${selectedVehicle.plate} · ${selectedVehicle.model}`
+                        : "Selecione um veiculo para continuar"}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      {selectedVehicle
+                        ? `${selectedVehicle.storeId || "Loja nao informada"} · ${getVehicleStatusLabel(selectedVehicle.status)}`
+                        : "O sistema sugere o KM atual quando o veiculo ja tem leitura salva."}
+                    </p>
+                  </div>
+
+                  <div className="app-panel-muted p-4">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                      Leitura operacional
+                    </p>
+                    <p className="mt-2 text-lg font-semibold text-slate-950 dark:text-white">
+                      {previewLiters != null ? `${previewLiters.toFixed(2)} L` : "-"}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      {selectedVehicle
+                        ? `${getResponsibleCoverageCount(selectedVehicle)} responsavel(is) vinculado(s) · KM atual ${selectedVehicle.currentKm ?? "nao informado"}`
+                        : "Os litros sao calculados automaticamente a partir do valor total e do preco por litro."}
+                    </p>
+                  </div>
+                </div>
+
                 <div className="app-panel-muted p-4">
                   <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
-                    Litros calculados
+                    Orientacao
                   </p>
-                  <p className="mt-2 text-lg font-semibold text-slate-950 dark:text-white">
-                    {previewLiters != null ? `${previewLiters?.toFixed(2)} L` : "-"}
+                  <p className="mt-2 text-sm text-slate-700 dark:text-slate-200">
+                    Registre o KM real no momento do abastecimento para manter consumo, historico e disponibilidade da frota organizados.
                   </p>
                 </div>
 
@@ -1445,9 +1589,12 @@ export default function AbastecimentosPage() {
                       <textarea
                         value={editReason}
                         onChange={(e) => setEditReason(e.target.value)}
-                        placeholder="Opcional: registre o motivo da edicao para auditoria interna."
+                        placeholder="Explique o motivo da alteracao para manter a auditoria do lancamento."
                         className="app-textarea min-h-[90px]"
                       />
+                      <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                        Esse motivo passa a ser obrigatorio quando um abastecimento e ajustado.
+                      </p>
                     </div>
                   </div>
 
@@ -1515,32 +1662,52 @@ export default function AbastecimentosPage() {
       </Dialog>
 
       {/* Lista */}
-      <Card className="app-panel p-4 md:p-5">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold text-gray-100">
-            Lista de abastecimentos
-          </h2>
-          <p className="text-xs text-gray-400">
-            Total exibido no período:{" "}
-            <span className="font-semibold text-yellow-400">
+      <Card className="app-panel gap-0 overflow-hidden py-0">
+        <div className="border-b border-border px-5 py-5">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-blue-500/10 dark:bg-blue-500/15">
+                <ReceiptText className="h-5 w-5 text-blue-600 dark:text-blue-300" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+                  Lista de abastecimentos
+                </h2>
+                <p className="text-sm text-slate-500 dark:text-slate-400">
+                  Lancamentos filtrados com custo, litros e responsavel.
+                </p>
+              </div>
+            </div>
+
+            <span className="rounded-full border border-yellow-200 bg-yellow-50 px-3 py-1 text-xs font-semibold text-yellow-700 dark:border-yellow-400/20 dark:bg-yellow-400/10 dark:text-yellow-200">
               R$ {totalGasto.toFixed(2)}
             </span>
-          </p>
+          </div>
         </div>
 
+        <div className="p-4 md:p-5">
         {loading ? (
-          <p className="text-sm text-gray-400">Carregando...</p>
+          <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+            {Array.from({ length: 3 }).map((_, index) => (
+              <div
+                key={index}
+                className="app-skeleton-block h-36 rounded-[24px]"
+              />
+            ))}
+          </div>
         ) : filteredFuelings.length === 0 ? (
-          <p className="text-sm text-gray-400">
-            Nenhum abastecimento encontrado para o período selecionado.
-          </p>
+          <div className="app-empty-state">
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+              Nenhum abastecimento encontrado para o periodo selecionado.
+            </p>
+          </div>
         ) : (
           <>
             <div className="space-y-3 md:hidden">
               {filteredFuelings.map((f) => (
                 <div
                   key={f.id}
-                  className="rounded-2xl border border-border bg-white/70 p-4 dark:border-white/10 dark:bg-white/[0.04]"
+                  className="app-list-card"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -1611,59 +1778,56 @@ export default function AbastecimentosPage() {
               ))}
             </div>
 
-            <div className="hidden overflow-x-auto md:block">
-            <table className="w-full text-sm border-collapse">
+            <div className="app-table-wrap hidden md:block">
+            <table className="app-table">
               <thead>
-                <tr className="text-left border-b border-neutral-800 text-gray-400">
-                  <th className="py-2 pr-2">Data</th>
-                  <th className="py-2 px-2">Veículo</th>
-                  <th className="py-2 px-2">Loja</th>
-                  <th className="py-2 px-2">KM</th>
-                  <th className="py-2 px-2">Litros</th>
-                  <th className="py-2 px-2">R$/L</th>
-                  <th className="py-2 px-2">Total</th>
-                  <th className="py-2 px-2">Responsável</th>
-                  <th className="py-2 px-2">Posto / Obs.</th>
+                <tr>
+                  <th>Data</th>
+                  <th>Veiculo</th>
+                  <th>Loja</th>
+                  <th>KM</th>
+                  <th>Litros</th>
+                  <th>R$/L</th>
+                  <th>Total</th>
+                  <th>Responsavel</th>
+                  <th>Posto / Obs.</th>
                   {isAdmin && (
-                    <th className="py-2 pl-2 text-right">Acoes</th>
+                    <th className="text-right">Acoes</th>
                   )}
                 </tr>
               </thead>
               <tbody>
                 {filteredFuelings.map((f) => (
-                  <tr
-                    key={f.id}
-                    className="border-b border-neutral-900 hover:bg-neutral-800/60"
-                  >
-                    <td className="py-2 pr-2 text-gray-200">
+                  <tr key={f.id}>
+                    <td>
                       {f.date
                         ? new Date(f.date).toLocaleString("pt-BR")
                         : "-"}
                     </td>
-                    <td className="py-2 px-2 font-mono text-gray-100">
+                    <td className="font-mono font-semibold text-slate-900 dark:text-white">
                       {f.vehiclePlate} · {f.vehicleModel}
                     </td>
-                    <td className="py-2 px-2 text-gray-200">{f.storeId}</td>
-                    <td className="py-2 px-2 text-gray-200">
+                    <td>{f.storeId}</td>
+                    <td>
                       {f.odometerKm} km
                     </td>
-                    <td className="py-2 px-2 text-gray-200">
+                    <td>
                       {f.liters.toFixed(2)} L
                     </td>
-                    <td className="py-2 px-2 text-gray-200">
+                    <td>
                       R$ {f.pricePerL.toFixed(2)}
                     </td>
-                    <td className="py-2 px-2 font-semibold text-yellow-300">
+                    <td className="font-semibold text-yellow-700 dark:text-yellow-200">
                       R$ {f.total.toFixed(2)}
                     </td>
-                    <td className="py-2 px-2 text-gray-200">
+                    <td>
                       {f.responsibleUserName}
                     </td>
-                    <td className="py-2 px-2 text-gray-300">
+                    <td>
                       {f.stationName ? f.stationName : "-"}
                     </td>
                     {isAdmin && (
-                      <td className="py-2 pl-2 text-right">
+                      <td>
                         <div className="flex flex-wrap justify-end gap-2">
                           <ActionIconButton
                             action="edit"
@@ -1683,6 +1847,7 @@ export default function AbastecimentosPage() {
             </div>
           </>
         )}
+        </div>
       </Card>
     </div>
   );

@@ -6,8 +6,6 @@ import {
   collection,
   getDocs,
   addDoc,
-  query,
-  where,
   updateDoc,
   deleteDoc,
   doc,
@@ -40,6 +38,15 @@ import {
   UserRoundCog,
   Users,
 } from "lucide-react";
+import {
+  getDriverDocsForUserByStores,
+  getVehicleDocsForUser,
+} from "@/lib/firestore-access";
+import {
+  getCanonicalStoreOptions,
+  normalizeStoreKey,
+  storesMatch,
+} from "@/lib/store-utils";
 
 interface SimpleUser {
   id: string;
@@ -58,11 +65,22 @@ interface Driver {
 
 type StatusFilter = "todos" | "ativos" | "inativos";
 
-const selectBaseClassName =
-  "h-11 w-full rounded-2xl border border-slate-300 bg-slate-50 px-3 text-sm text-slate-900 outline-none transition focus:border-yellow-400 focus:bg-white dark:border-white/10 dark:bg-black/20 dark:text-white dark:[color-scheme:dark]";
+interface UserDocData {
+  name?: string;
+  storeId?: string;
+  active?: boolean;
+}
+
+interface DriverDocData {
+  name?: string;
+  storeId?: string;
+  responsibleUserId?: string;
+  responsibleUserName?: string;
+  active?: boolean;
+}
 
 function normalizeText(value: string) {
-  return value.trim().toLowerCase();
+  return value.trim().toLocaleLowerCase("pt-BR");
 }
 
 export default function MotoristasPage() {
@@ -111,43 +129,75 @@ export default function MotoristasPage() {
         // Admin pode escolher qualquer usuário como responsável
         if (user.role === "admin") {
           const usersSnap = await getDocs(collection(db, "users"));
-          const usersList: SimpleUser[] = usersSnap.docs.map((d) => {
-            const data = d.data() as any;
-            return {
-              id: d.id,
-              name: data.name,
-              storeId: data.storeId,
-            };
-          });
+          const usersList: SimpleUser[] = usersSnap.docs.reduce<SimpleUser[]>(
+            (accumulator, snapshot) => {
+              const data = snapshot.data() as UserDocData;
+              const name = typeof data.name === "string" ? data.name : "";
+              const storeId = typeof data.storeId === "string" ? data.storeId : "";
+
+              if (data.active === false || !name || !storeId) {
+                return accumulator;
+              }
+
+              accumulator.push({
+                id: snapshot.id,
+                name,
+                storeId,
+              });
+
+              return accumulator;
+            },
+            []
+          );
           setUsers(usersList);
         }
 
-        // Motoristas:
-        // - admin vê todos
-        // - usuário comum vê TODOS os motoristas da própria loja (para compartilhar a lista)
-        let driversSnap;
-        if (user.role === "admin") {
-          driversSnap = await getDocs(collection(db, "drivers"));
-        } else {
-          driversSnap = await getDocs(
-            query(
-              collection(db, "drivers"),
-              where("storeId", "==", user.storeId)
-            )
-          );
-        }
+        const vehicleDocs =
+          user.role === "admin" ? [] : await getVehicleDocsForUser(db, user);
+        const visibleVehicleStoreIds = vehicleDocs
+          .map((snapshot) => {
+            const data = snapshot.data();
+            return typeof data.storeId === "string" ? data.storeId : "";
+          })
+          .filter(Boolean);
+        const visibleStoreKeys = new Set(
+          visibleVehicleStoreIds
+            .map((value) => normalizeStoreKey(value))
+            .filter(Boolean)
+        );
+        const driverDocs = await getDriverDocsForUserByStores(
+          db,
+          user,
+          visibleVehicleStoreIds
+        );
 
-        const driversList: Driver[] = driversSnap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            name: data.name,
-            storeId: data.storeId,
-            responsibleUserId: data.responsibleUserId,
-            responsibleUserName: data.responsibleUserName,
-            active: data.active ?? true,
-          };
-        });
+        const driversList: Driver[] = driverDocs
+          .map((d) => {
+            const data = d.data() as DriverDocData;
+            return {
+              id: d.id,
+              name: typeof data.name === "string" ? data.name : "",
+              storeId: typeof data.storeId === "string" ? data.storeId : "",
+              responsibleUserId:
+                typeof data.responsibleUserId === "string"
+                  ? data.responsibleUserId
+                  : "",
+              responsibleUserName:
+                typeof data.responsibleUserName === "string"
+                  ? data.responsibleUserName
+                  : "",
+              active: data.active ?? true,
+            };
+          })
+          .filter((driver) => {
+            if (user.role === "admin") return true;
+
+            return (
+              driver.responsibleUserId === user.id ||
+              visibleStoreKeys.has(normalizeStoreKey(driver.storeId)) ||
+              storesMatch(driver.storeId, user.storeId)
+            );
+          });
 
         setDrivers(driversList);
       } catch (error) {
@@ -208,8 +258,15 @@ export default function MotoristasPage() {
       setSuccessMsg("");
       setSaving(true);
 
-      if (!name) {
+      const trimmedName = name.trim();
+
+      if (!trimmedName) {
         setErrorMsg("Preencha o nome do motorista.");
+        return;
+      }
+
+      if (trimmedName.length < 3) {
+        setErrorMsg("Use pelo menos 3 caracteres no nome do motorista.");
         return;
       }
 
@@ -240,8 +297,22 @@ export default function MotoristasPage() {
         return;
       }
 
+      const normalizedName = normalizeText(trimmedName);
+      const duplicateDriver = drivers.find(
+        (driver) =>
+          storesMatch(driver.storeId, storeToSave) &&
+          normalizeText(driver.name) === normalizedName
+      );
+
+      if (duplicateDriver) {
+        setErrorMsg(
+          `Ja existe um motorista com esse nome vinculado a loja ${storeToSave}.`
+        );
+        return;
+      }
+
       const docRef = await addDoc(collection(db, "drivers"), {
-        name,
+        name: trimmedName,
         storeId: storeToSave,
         responsibleUserId,
         responsibleUserName,
@@ -252,7 +323,7 @@ export default function MotoristasPage() {
         ...prev,
         {
           id: docRef.id,
-          name,
+          name: trimmedName,
           storeId: storeToSave,
           responsibleUserId,
           responsibleUserName,
@@ -278,8 +349,15 @@ export default function MotoristasPage() {
       setSuccessMsg("");
       setSaving(true);
 
-      if (!name) {
+      const trimmedName = name.trim();
+
+      if (!trimmedName) {
         setErrorMsg("Preencha o nome do motorista.");
+        return;
+      }
+
+      if (trimmedName.length < 3) {
+        setErrorMsg("Use pelo menos 3 caracteres no nome do motorista.");
         return;
       }
 
@@ -305,8 +383,23 @@ export default function MotoristasPage() {
         storeToSave = editingDriver.storeId || user!.storeId;
       }
 
+      const normalizedName = normalizeText(trimmedName);
+      const duplicateDriver = drivers.find(
+        (driver) =>
+          driver.id !== editingDriver.id &&
+          storesMatch(driver.storeId, storeToSave) &&
+          normalizeText(driver.name) === normalizedName
+      );
+
+      if (duplicateDriver) {
+        setErrorMsg(
+          `Ja existe um motorista com esse nome vinculado a loja ${storeToSave}.`
+        );
+        return;
+      }
+
       await updateDoc(doc(db, "drivers", editingDriver.id), {
-        name,
+        name: trimmedName,
         storeId: storeToSave,
         responsibleUserId,
         responsibleUserName,
@@ -315,13 +408,13 @@ export default function MotoristasPage() {
       setDrivers((prev) =>
         prev.map((d) =>
           d.id === editingDriver.id
-            ? {
-                ...d,
-                name,
-                storeId: storeToSave,
-                responsibleUserId,
-                responsibleUserName,
-              }
+              ? {
+                  ...d,
+                  name: trimmedName,
+                  storeId: storeToSave,
+                  responsibleUserId,
+                  responsibleUserName,
+                }
             : d
         )
       );
@@ -398,7 +491,9 @@ export default function MotoristasPage() {
   const totalDrivers = drivers.length;
   const ativos = drivers.filter((d) => d.active).length;
   const inativos = drivers.filter((d) => !d.active).length;
-  const totalStores = new Set(drivers.map((d) => d.storeId)).size;
+  const totalStores = new Set(
+    drivers.map((d) => normalizeStoreKey(d.storeId)).filter(Boolean)
+  ).size;
 
   const isEditMode = !!editingDriver;
   const sortedDrivers = useMemo(() => {
@@ -412,17 +507,10 @@ export default function MotoristasPage() {
   }, [drivers]);
 
   const storeOptions = useMemo(() => {
-    const values = new Set<string>();
-
-    sortedDrivers.forEach((driver) => {
-      if (driver.storeId) values.add(driver.storeId);
-    });
-
-    users.forEach((responsibleUser) => {
-      if (responsibleUser.storeId) values.add(responsibleUser.storeId);
-    });
-
-    return Array.from(values).sort((a, b) => a.localeCompare(b, "pt-BR"));
+    return getCanonicalStoreOptions([
+      ...sortedDrivers.map((driver) => driver.storeId),
+      ...users.map((responsibleUser) => responsibleUser.storeId),
+    ]);
   }, [sortedDrivers, users]);
 
   const responsibleOptions = useMemo(() => {
@@ -444,6 +532,22 @@ export default function MotoristasPage() {
     }, []);
   }, [isAdmin, sortedDrivers, users]);
 
+  const selectedResponsible = useMemo(() => {
+    if (!isAdmin) {
+      return user
+        ? {
+            id: user.id,
+            name: user.name,
+            storeId: user.storeId,
+          }
+        : null;
+    }
+
+    return (
+      users.find((responsibleUser) => responsibleUser.id === responsibleId) || null
+    );
+  }, [isAdmin, responsibleId, user, users]);
+
   const filteredDrivers = useMemo(() => {
     const normalizedSearch = normalizeText(searchTerm);
 
@@ -460,7 +564,8 @@ export default function MotoristasPage() {
         (statusFilter === "inativos" && !driver.active);
 
       const matchesStore =
-        storeFilter === "todas" || driver.storeId === storeFilter;
+        storeFilter === "todas" ||
+        normalizeStoreKey(driver.storeId) === storeFilter;
 
       const matchesResponsible =
         responsibleFilter === "todos" ||
@@ -485,6 +590,13 @@ export default function MotoristasPage() {
     filteredDrivers.length === totalDrivers
       ? `${totalDrivers} motorista(s) cadastrados`
       : `${filteredDrivers.length} de ${totalDrivers} motorista(s) visiveis`;
+
+  function clearFilters() {
+    setSearchTerm("");
+    setStatusFilter("todos");
+    setStoreFilter("todas");
+    setResponsibleFilter("todos");
+  }
 
   return (
     <div className="app-page">
@@ -513,7 +625,7 @@ export default function MotoristasPage() {
         <StatusBanner tone="success">{successMsg}</StatusBanner>
       ) : null}
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
         <MetricCard
           label="Total"
           value={String(totalDrivers)}
@@ -562,20 +674,15 @@ export default function MotoristasPage() {
             <Button
               variant="outline"
               className="border-slate-200 text-slate-700 hover:bg-slate-100 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5"
-              onClick={() => {
-                setSearchTerm("");
-                setStatusFilter("todos");
-                setStoreFilter("todas");
-                setResponsibleFilter("todos");
-              }}
+              onClick={clearFilters}
             >
               Limpar filtros
             </Button>
           ) : null}
         </div>
 
-        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-[24px] border border-slate-200/80 bg-slate-50/70 p-3 md:col-span-2 dark:border-white/10 dark:bg-white/[0.02]">
+        <div className="mt-4 grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
+          <div className="min-w-0 md:col-span-2">
             <label className="mb-1.5 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">
               Buscar
             </label>
@@ -585,17 +692,17 @@ export default function MotoristasPage() {
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 placeholder="Busque por nome, loja ou responsavel"
-                className="h-11 rounded-2xl border-slate-300 bg-slate-50 pl-10 text-slate-900 placeholder:text-slate-400 dark:border-white/10 dark:bg-black/20 dark:text-white dark:placeholder:text-slate-500"
+                className="app-field h-11 pl-10"
               />
             </div>
           </div>
 
-          <div className="rounded-[24px] border border-slate-200/80 bg-slate-50/70 p-3 dark:border-white/10 dark:bg-white/[0.02]">
+          <div className="min-w-0">
             <label className="mb-1.5 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">
               Status
             </label>
             <select
-              className={selectBaseClassName}
+              className="app-select h-11"
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
             >
@@ -605,34 +712,34 @@ export default function MotoristasPage() {
             </select>
           </div>
 
-          <div className="rounded-[24px] border border-slate-200/80 bg-slate-50/70 p-3 dark:border-white/10 dark:bg-white/[0.02]">
+          <div className="min-w-0">
             <label className="mb-1.5 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">
               Loja
             </label>
             <select
-              className={selectBaseClassName}
+              className="app-select h-11"
               value={storeFilter}
               onChange={(e) => setStoreFilter(e.target.value)}
             >
               <option value="todas">Todas as lojas</option>
               {storeOptions.map((store) => (
-                <option key={store} value={store}>
-                  {store}
+                <option key={store.key} value={store.key}>
+                  {store.label}
                 </option>
               ))}
             </select>
           </div>
 
           <div
-            className={`rounded-[24px] border border-slate-200/80 bg-slate-50/70 p-3 dark:border-white/10 dark:bg-white/[0.02] ${
-              isAdmin ? "" : "xl:col-span-2"
+            className={`min-w-0 ${
+              isAdmin ? "" : "2xl:col-span-2"
             }`}
           >
             <label className="mb-1.5 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">
               Responsavel
             </label>
             <select
-              className={selectBaseClassName}
+              className="app-select h-11"
               value={responsibleFilter}
               onChange={(e) => setResponsibleFilter(e.target.value)}
             >
@@ -667,7 +774,7 @@ export default function MotoristasPage() {
         </div>
 
         {loading ? (
-          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <div className="mt-4 grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
             {Array.from({ length: 3 }).map((_, index) => (
               <div
                 key={index}
@@ -760,16 +867,16 @@ export default function MotoristasPage() {
               ))}
             </div>
 
-            <div className="mt-4 hidden overflow-x-auto md:block">
-              <table className="min-w-[860px] w-full border-collapse text-sm">
+            <div className="app-table-wrap mt-4 hidden md:block">
+              <table className="app-table min-w-[860px]">
                 <thead>
-                  <tr className="border-b border-slate-200 text-left text-slate-500 dark:border-white/10 dark:text-slate-400">
-                    <th className="py-3 pr-3 font-medium">Motorista</th>
-                    <th className="px-3 py-3 font-medium">Loja</th>
-                    <th className="px-3 py-3 font-medium">Responsavel</th>
-                    <th className="px-3 py-3 font-medium">Status</th>
+                  <tr>
+                    <th>Motorista</th>
+                    <th>Loja</th>
+                    <th>Responsavel</th>
+                    <th>Status</th>
                     {isAdmin ? (
-                      <th className="py-3 pl-3 text-right font-medium">Acoes</th>
+                      <th className="text-right">Acoes</th>
                     ) : null}
                   </tr>
                 </thead>
@@ -877,7 +984,7 @@ export default function MotoristasPage() {
                     placeholder="Digite o nome completo"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    className="h-11 rounded-2xl border-slate-200 dark:border-white/10 dark:bg-white/[0.03]"
+                    className="app-field h-11"
                   />
                 </div>
 
@@ -889,7 +996,7 @@ export default function MotoristasPage() {
                     value={isAdmin ? storeId : user?.storeId ?? storeId}
                     readOnly
                     placeholder="Loja definida pelo responsavel"
-                    className="h-11 rounded-2xl border-slate-200 dark:border-white/10 dark:bg-white/[0.03]"
+                    className="app-field h-11"
                   />
                   <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                     {isAdmin
@@ -904,7 +1011,7 @@ export default function MotoristasPage() {
                   </label>
                   {isAdmin ? (
                     <select
-                      className={selectBaseClassName}
+                      className="app-select h-11"
                       value={responsibleId}
                       onChange={(e) => handleChangeResponsible(e.target.value)}
                     >
@@ -919,7 +1026,7 @@ export default function MotoristasPage() {
                     <Input
                       readOnly
                       value={user?.name ?? ""}
-                      className="h-11 rounded-2xl border-slate-200 dark:border-white/10 dark:bg-white/[0.03]"
+                      className="app-field h-11"
                     />
                   )}
                   <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
@@ -932,7 +1039,7 @@ export default function MotoristasPage() {
                 <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
                   Leitura rapida
                 </p>
-                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 dark:border-white/10 dark:bg-black/10">
                     <p className="text-xs text-slate-500 dark:text-slate-400">
                       Nome informado
@@ -949,7 +1056,23 @@ export default function MotoristasPage() {
                       {(isAdmin ? storeId : user?.storeId ?? storeId) || "-"}
                     </p>
                   </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 dark:border-white/10 dark:bg-black/10">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Responsavel vinculado
+                    </p>
+                    <p className="mt-1 text-sm font-medium text-slate-900 dark:text-white">
+                      {selectedResponsible?.name || "-"}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      {selectedResponsible?.storeId || "Loja sera definida pela unidade."}
+                    </p>
+                  </div>
                 </div>
+
+                <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
+                  O cadastro deste motorista sera compartilhado na unidade vinculada,
+                  ajudando o time da loja a usar sempre a mesma base operacional.
+                </p>
               </div>
             </div>
 

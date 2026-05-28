@@ -4,7 +4,7 @@ import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { doc, getDoc } from "firebase/firestore";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import { signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { Eye, EyeOff, LoaderCircle } from "lucide-react";
 
 import { auth, db } from "@/lib/firebase";
@@ -22,28 +22,50 @@ export default function LoginPage() {
   const [showSenha, setShowSenha] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
+  async function findUsernameRecord(rawUsername: string) {
+    const trimmedUsername = rawUsername.trim();
+    const candidates = Array.from(
+      new Set([trimmedUsername, trimmedUsername.toLowerCase()])
+    ).filter(Boolean);
+
+    for (const candidate of candidates) {
+      const usernameRef = doc(db, "usernames", candidate);
+      const usernameSnap = await getDoc(usernameRef);
+
+      if (usernameSnap.exists()) {
+        return usernameSnap;
+      }
+    }
+
+    return null;
+  }
+
   async function handleLogin(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     try {
       setErro("");
 
-      if (!username || !senha) {
+      if (!username.trim() || !senha.trim()) {
         setErro("Preencha usuario e senha para entrar.");
         return;
       }
 
       setSubmitting(true);
 
-      const usernameRef = doc(db, "usernames", username.trim());
-      const usernameSnap = await getDoc(usernameRef);
+      const usernameSnap = await findUsernameRecord(username);
 
-      if (!usernameSnap.exists()) {
+      if (!usernameSnap) {
         setErro("Usuario nao encontrado.");
         return;
       }
 
       const email = usernameSnap.data().email;
+      if (typeof email !== "string" || !email) {
+        setErro("Nao foi possivel localizar o email deste usuario.");
+        return;
+      }
+
       const cred = await signInWithEmailAndPassword(auth, email, senha);
 
       const userRef = doc(db, "users", cred.user.uid);
@@ -56,12 +78,20 @@ export default function LoginPage() {
 
       const userData = userSnap.data();
 
-      if (userData.mustChangePassword) {
-        router.push("/nova-senha");
+      if (userData.active === false) {
+        await signOut(auth);
+        setErro(
+          "Seu acesso esta inativo no momento. Procure a administracao para reativar a conta."
+        );
         return;
       }
 
-      router.push("/dashboard");
+      if (userData.mustChangePassword) {
+        router.replace("/nova-senha");
+        return;
+      }
+
+      router.replace("/rotas");
     } catch (error) {
       console.error("ERRO LOGIN:", error);
       setErro("Usuario ou senha incorretos.");
@@ -87,6 +117,7 @@ export default function LoginPage() {
                   src="/mm-frota-logo.png"
                   alt="Logo Grupo MM"
                   fill
+                  sizes="144px"
                   className="object-contain"
                   priority
                 />

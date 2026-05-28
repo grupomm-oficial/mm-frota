@@ -8,18 +8,35 @@ import {
   query,
   where,
   orderBy,
+  limit as queryLimit,
   updateDoc,
   doc,
   writeBatch,
 } from "firebase/firestore";
 import { useAuth } from "@/context/AuthContext";
-import { useRouter } from "next/navigation";
-import { ActionIconButton } from "@/components/ui/action-icon-button";
+import { usePathname, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { StatusBanner } from "@/components/layout/StatusBanner";
+import {
+  getNumberValue,
+  getOptionalNumberValue,
+  getOptionalStringValue,
+  getStringArrayValue,
+  getStringValue,
+  toFirestoreRecord,
+} from "@/lib/firestore-fields";
+import {
+  getDriverDocsForUserByStores,
+  getRecordDocsForUserByVehicles,
+  getVehicleDocsForUser,
+} from "@/lib/firestore-access";
+import {
+  getCanonicalStoreOptions,
+  normalizeStoreKey,
+} from "@/lib/store-utils";
 import {
   Route as RouteIcon,
   Activity,
@@ -28,8 +45,8 @@ import {
   Filter,
   Search,
   Info,
+  MoreHorizontal,
   PencilLine,
-  PieChart as PieIcon,
   CheckCircle2,
   Gauge,
   History,
@@ -44,13 +61,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  Cell,
-  Legend,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip as ReTooltip,
-} from "recharts";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 type RouteStatus = "em_andamento" | "finalizada" | "cancelada";
 
@@ -117,35 +132,110 @@ interface RouteItem {
   editReason?: string | null;
 }
 
-const vehicleStatusColors = ["#facc15", "#3b82f6", "#e5e7eb"];
+function parseVehicle(id: string, value: unknown): Vehicle {
+  const data = toFirestoreRecord(value);
 
-const CustomPieTooltip = ({ active, payload }: any) => {
-  if (!active || !payload || !payload.length) return null;
-  const item = payload[0];
-  const color = item.color || item.fill || "#facc15";
+  return {
+    id,
+    plate: getStringValue(data.plate),
+    model: getStringValue(data.model),
+    storeId: getStringValue(data.storeId),
+    currentKm: getOptionalNumberValue(data.currentKm) ?? undefined,
+    status:
+      data.status === "em_rota" || data.status === "manutencao"
+        ? data.status
+        : "disponivel",
+    responsibleUserId: getOptionalStringValue(data.responsibleUserId) ?? undefined,
+    responsibleUserIds: getStringArrayValue(data.responsibleUserIds),
+  };
+}
 
-  const value = item.value || 0;
-  const total = item.payload?.total || 0;
-  const percent = total ? ((value / total) * 100).toFixed(1) : null;
+function parseDriver(id: string, value: unknown): Driver {
+  const data = toFirestoreRecord(value);
 
-  return (
-    <div
-      style={{
-        backgroundColor: "#020617",
-        borderRadius: 8,
-        padding: "6px 10px",
-        border: `1px solid ${color}`,
-        fontSize: 11,
-      }}
-    >
-      <p style={{ margin: 0, color }}>{item.name}</p>
-      <p style={{ margin: 0, color: "#e5e7eb" }}>
-        {value} veículo(s)
-        {percent && ` · ${percent}%`}
-      </p>
-    </div>
-  );
-};
+  return {
+    id,
+    name: getStringValue(data.name),
+    storeId: getStringValue(data.storeId),
+    responsibleUserId: getStringValue(data.responsibleUserId),
+  };
+}
+
+function parseRouteItem(id: string, value: unknown): RouteItem {
+  const data = toFirestoreRecord(value);
+  const rawStatus = getStringValue(data.status);
+
+  return {
+    id,
+    vehicleId: getStringValue(data.vehicleId),
+    vehiclePlate: getStringValue(data.vehiclePlate),
+    vehicleModel: getStringValue(data.vehicleModel),
+    storeId:
+      getOptionalStringValue(data.storeId) ??
+      getOptionalStringValue(data.vehicleStoreId),
+    driverId: getStringValue(data.driverId),
+    driverName: getStringValue(data.driverName),
+    origem: getOptionalStringValue(data.origem),
+    destino: getOptionalStringValue(data.destino),
+    startKm: getNumberValue(data.startKm),
+    endKm: getOptionalNumberValue(data.endKm),
+    startAt: getOptionalStringValue(data.startAt),
+    endAt: getOptionalStringValue(data.endAt),
+    distanceKm: getOptionalNumberValue(data.distanceKm),
+    status:
+      rawStatus === "finalizada" || rawStatus === "cancelada"
+        ? rawStatus
+        : "em_andamento",
+    responsibleUserId: getStringValue(data.responsibleUserId),
+    responsibleUserName: getOptionalStringValue(data.responsibleUserName),
+    observacoes: getOptionalStringValue(data.observacoes),
+    createdAt:
+      getOptionalStringValue(data.createdAt) ??
+      getOptionalStringValue(data.startAt),
+    createdById:
+      getOptionalStringValue(data.createdById) ??
+      getOptionalStringValue(data.responsibleUserId),
+    createdByName:
+      getOptionalStringValue(data.createdByName) ??
+      getOptionalStringValue(data.responsibleUserName),
+    finishedAt:
+      getOptionalStringValue(data.finishedAt) ??
+      getOptionalStringValue(data.endAt),
+    finishedById: getOptionalStringValue(data.finishedById),
+    finishedByName: getOptionalStringValue(data.finishedByName),
+    canceledAt: getOptionalStringValue(data.canceledAt),
+    canceledById: getOptionalStringValue(data.canceledById),
+    canceledByName: getOptionalStringValue(data.canceledByName),
+    cancelReason: getOptionalStringValue(data.cancelReason),
+    updatedAt: getOptionalStringValue(data.updatedAt),
+    updatedById: getOptionalStringValue(data.updatedById),
+    updatedByName: getOptionalStringValue(data.updatedByName),
+    editReason: getOptionalStringValue(data.editReason),
+  };
+}
+
+function parseMaintenanceLock(value: unknown): MaintenanceLock {
+  const data = toFirestoreRecord(value);
+
+  return {
+    vehicleId: getStringValue(data.vehicleId),
+    status: data.status === "concluida" ? "concluida" : "em_andamento",
+  };
+}
+
+function getVehicleStatusLabel(status?: Vehicle["status"]) {
+  if (status === "em_rota") return "Em rota";
+  if (status === "manutencao") return "Em manutencao";
+  return "Disponivel";
+}
+
+function getResponsibleCoverageCount(
+  vehicle?: Pick<Vehicle, "responsibleUserId" | "responsibleUserIds"> | null
+) {
+  if (!vehicle) return 0;
+  if (vehicle.responsibleUserIds?.length) return vehicle.responsibleUserIds.length;
+  return vehicle.responsibleUserId ? 1 : 0;
+}
 
 function getMonthKeyFromIso(iso?: string | null): string | null {
   if (!iso) return null;
@@ -154,16 +244,6 @@ function getMonthKeyFromIso(iso?: string | null): string | null {
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, "0");
   return `${year}-${month}`;
-}
-
-function getDateKeyFromIso(iso?: string | null): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
 }
 
 function getRouteReferenceIso(route: RouteItem): string {
@@ -203,9 +283,15 @@ function formatDurationHours(hours: number) {
   return `${hours.toFixed(1)}h`;
 }
 
+function normalizeScopeValue(value?: string | null) {
+  return (value ?? "").trim().toLowerCase();
+}
+
 export default function RotasPage() {
   const { user } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
+  const isHistoryPage = pathname.startsWith("/rotas/realizadas");
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
@@ -247,16 +333,7 @@ export default function RotasPage() {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   });
-  const [showAllHistoryRoutes, setShowAllHistoryRoutes] = useState(false);
 
-  // filtro para ver só rotas que eu lancei
-  const [activeSearch, setActiveSearch] = useState("");
-  const [activeStoreFilter, setActiveStoreFilter] = useState("todas");
-  const [activeDriverFilter, setActiveDriverFilter] = useState("todos");
-  const [activeDurationFilter, setActiveDurationFilter] = useState<
-    "todas" | "4h" | "8h"
-  >("todas");
-  const [showOnlyMyActiveRoutes, setShowOnlyMyActiveRoutes] = useState(false);
   const [showOnlyMyRoutes, setShowOnlyMyRoutes] = useState(false);
 
   // edição/visualização de obs
@@ -270,6 +347,7 @@ export default function RotasPage() {
   const [editDestinoInput, setEditDestinoInput] = useState("");
   const [editStartKmInput, setEditStartKmInput] = useState("");
   const [editEndKmInput, setEditEndKmInput] = useState("");
+  const [editCancelReasonInput, setEditCancelReasonInput] = useState("");
   const [editObsInput, setEditObsInput] = useState("");
   const [editReasonInput, setEditReasonInput] = useState("");
 
@@ -292,25 +370,11 @@ export default function RotasPage() {
         setLoading(true);
         setErrorMsg("");
 
-        // ===== VEÍCULOS =====
-        const vehiclesSnap = await getDocs(collection(db, "vehicles"));
-        let vList: Vehicle[] = vehiclesSnap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            plate: data.plate,
-            model: data.model,
-            storeId: data.storeId,
-            currentKm: data.currentKm,
-            status: data.status,
-            responsibleUserId: data.responsibleUserId,
-            responsibleUserIds: Array.isArray(data.responsibleUserIds)
-              ? data.responsibleUserIds
-              : undefined,
-          };
-        });
+        const vehicleDocs = await getVehicleDocsForUser(db, user);
+        let vList = vehicleDocs.map((snapshot) =>
+          parseVehicle(snapshot.id, snapshot.data())
+        );
 
-        // usuário comum vê apenas veículos em que é responsável (single ou multi)
         if (!isAdmin) {
           vList = vList.filter((v) => {
             const singleMatch = v.responsibleUserId === user.id;
@@ -319,97 +383,99 @@ export default function RotasPage() {
           });
         }
 
-        // ===== MOTORISTAS =====
-        // Agora lista motoristas da MESMA LOJA do usuário
-        // (admin e usuário comum enxergam a lista da loja)
-        let driversSnap;
-        if (isAdmin) {
-          driversSnap = await getDocs(collection(db, "drivers"));
-        } else if (user.storeId) {
-          driversSnap = await getDocs(
-            query(
-              collection(db, "drivers"),
-              where("storeId", "==", user.storeId)
-            )
-          );
-        } else {
-          // fallback: se por algum motivo não tiver storeId no usuário,
-          // mantém comportamento antigo
-          driversSnap = await getDocs(
-            query(
-              collection(db, "drivers"),
-              where("responsibleUserId", "==", user.id)
-            )
-          );
-        }
+        const allowedVehicleIds = new Set(vList.map((vehicle) => vehicle.id));
 
-        const dList: Driver[] = driversSnap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            name: data.name,
-            storeId: data.storeId,
-            responsibleUserId: data.responsibleUserId,
-          };
-        });
-
-        // ===== ROTAS =====
-        const routesSnap = await getDocs(
-          query(collection(db, "routes"), orderBy("startAt", "desc"))
+        const driversRequest = getDriverDocsForUserByStores(
+          db,
+          user,
+          vList.map((vehicle) => vehicle.storeId)
         );
 
-        let rList: RouteItem[] = routesSnap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            vehicleId: data.vehicleId,
-            vehiclePlate: data.vehiclePlate,
-            vehicleModel: data.vehicleModel,
-            storeId: data.storeId ?? data.vehicleStoreId ?? null,
-            driverId: data.driverId,
-            driverName: data.driverName,
-            origem: data.origem ?? null,
-            destino: data.destino ?? null,
-            startKm: data.startKm,
-            endKm: data.endKm ?? null,
-            startAt: data.startAt ?? null,
-            endAt: data.endAt ?? null,
-            distanceKm: data.distanceKm ?? null,
-            status: (data.status ?? "em_andamento") as RouteStatus,
-            responsibleUserId: data.responsibleUserId,
-            responsibleUserName: data.responsibleUserName ?? null,
-            observacoes: data.observacoes ?? null,
-            createdAt: data.createdAt ?? data.startAt ?? null,
-            createdById: data.createdById ?? data.responsibleUserId ?? null,
-            createdByName: data.createdByName ?? data.responsibleUserName ?? null,
-            finishedAt: data.finishedAt ?? data.endAt ?? null,
-            finishedById: data.finishedById ?? null,
-            finishedByName: data.finishedByName ?? null,
-            canceledAt: data.canceledAt ?? null,
-            canceledById: data.canceledById ?? null,
-            canceledByName: data.canceledByName ?? null,
-            cancelReason: data.cancelReason ?? null,
-            updatedAt: data.updatedAt ?? null,
-            updatedById: data.updatedById ?? null,
-            updatedByName: data.updatedByName ?? null,
-            editReason: data.editReason ?? null,
-          };
-        });
+        const routesRequest = isAdmin
+          ? isHistoryPage
+            ? getDocs(
+                query(collection(db, "routes"), orderBy("startAt", "desc"))
+              ).then((snapshot) => snapshot.docs)
+            : Promise.all([
+                getDocs(
+                  query(
+                    collection(db, "routes"),
+                    where("status", "==", "em_andamento")
+                  )
+                ),
+                getDocs(
+                  query(
+                    collection(db, "routes"),
+                    orderBy("startAt", "desc"),
+                    queryLimit(100)
+                  )
+                ),
+              ]).then(([activeRoutesSnap, recentRoutesSnap]) => {
+                const docsById = new Map<
+                  string,
+                  (typeof activeRoutesSnap.docs)[number]
+                >();
 
-        // usuário comum vê apenas rotas de veículos em que ele é responsável
+                activeRoutesSnap.docs.forEach((snapshot) => {
+                  docsById.set(snapshot.id, snapshot);
+                });
+                recentRoutesSnap.docs.forEach((snapshot) => {
+                  docsById.set(snapshot.id, snapshot);
+                });
+
+                return Array.from(docsById.values());
+              })
+          : getRecordDocsForUserByVehicles(
+              db,
+              "routes",
+              user,
+              Array.from(allowedVehicleIds)
+            );
+
+        const maintenancesRequest = isAdmin
+          ? getDocs(collection(db, "maintenances")).then((snapshot) => snapshot.docs)
+          : getRecordDocsForUserByVehicles(
+              db,
+              "maintenances",
+              user,
+              Array.from(allowedVehicleIds)
+            );
+
+        const [driverDocs, routeDocs, maintenanceDocs] = await Promise.all([
+          driversRequest,
+          routesRequest,
+          maintenancesRequest,
+        ]);
+
+        const visibleStoreKeys = new Set(
+          vList.map((vehicle) => normalizeScopeValue(vehicle.storeId)).filter(Boolean)
+        );
+        const dList = driverDocs
+          .map((snapshot) => parseDriver(snapshot.id, snapshot.data()))
+          .filter((driver) => {
+            if (isAdmin) return true;
+
+            const driverStoreKey = normalizeScopeValue(driver.storeId);
+            return (
+              driver.responsibleUserId === user.id ||
+              visibleStoreKeys.has(driverStoreKey)
+            );
+          });
+
+        let rList = routeDocs
+          .map((snapshot) => parseRouteItem(snapshot.id, snapshot.data()))
+          .sort((a, b) =>
+            getRouteReferenceIso(b).localeCompare(getRouteReferenceIso(a))
+          );
+
         if (!isAdmin) {
           const allowedVehicleIds = new Set(vList.map((v) => v.id));
           rList = rList.filter((r) => allowedVehicleIds.has(r.vehicleId));
         }
 
-        const maintenancesSnap = await getDocs(collection(db, "maintenances"));
-        let maintenanceList: MaintenanceLock[] = maintenancesSnap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            vehicleId: data.vehicleId,
-            status: (data.status ?? "em_andamento") as MaintenanceLock["status"],
-          };
-        });
+        let maintenanceList = maintenanceDocs.map((snapshot) =>
+          parseMaintenanceLock(snapshot.data())
+        );
 
         if (!isAdmin) {
           const allowedVehicleIds = new Set(vList.map((v) => v.id));
@@ -431,7 +497,7 @@ export default function RotasPage() {
     }
 
     loadData();
-  }, [user, isAdmin]);
+  }, [user, isAdmin, isHistoryPage]);
 
   function resetForm() {
     setSelectedVehicleId("");
@@ -525,8 +591,7 @@ export default function RotasPage() {
     return durations.reduce((sum, value) => sum + value, 0) / durations.length;
   }, [rotasFinalizadas]);
 
-  const vehicleStatusData = useMemo(() => {
-    if (!vehicles.length) return [];
+  const vehicleAvailabilitySummary = useMemo(() => {
     let disponivel = 0;
     let emRota = 0;
     let manutencao = 0;
@@ -538,14 +603,17 @@ export default function RotasPage() {
     });
 
     const total = disponivel + emRota + manutencao;
+    const ocupados = emRota + manutencao;
+    const availablePercent = total ? Math.round((disponivel / total) * 100) : 0;
 
-    const data = [
-      { name: "Disponíveis", value: disponivel, total },
-      { name: "Em rota", value: emRota, total },
-      { name: "Em manutenção", value: manutencao, total },
-    ];
-
-    return data.filter((d) => d.value > 0);
+    return {
+      disponivel,
+      emRota,
+      manutencao,
+      ocupados,
+      total,
+      availablePercent,
+    };
   }, [vehicles]);
 
   const availableVehiclesNow = useMemo(() => {
@@ -564,11 +632,7 @@ export default function RotasPage() {
   );
 
   const storeOptions = useMemo(() => {
-    const set = new Set<string>();
-    historyRoutes.forEach((r) => {
-      if (r.storeId) set.add(r.storeId);
-    });
-    return Array.from(set).sort();
+    return getCanonicalStoreOptions(historyRoutes.map((route) => route.storeId));
   }, [historyRoutes]);
 
   const driverOptions = useMemo(() => {
@@ -578,22 +642,6 @@ export default function RotasPage() {
     });
     return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1]));
   }, [historyRoutes]);
-
-  const activeStoreOptions = useMemo(() => {
-    const stores = new Set<string>();
-    rotasEmAndamento.forEach((route) => {
-      if (route.storeId) stores.add(route.storeId);
-    });
-    return Array.from(stores).sort();
-  }, [rotasEmAndamento]);
-
-  const activeDriverOptions = useMemo(() => {
-    const map = new Map<string, string>();
-    rotasEmAndamento.forEach((route) => {
-      if (route.driverId) map.set(route.driverId, route.driverName);
-    });
-    return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1]));
-  }, [rotasEmAndamento]);
 
   const isOwner = (route: RouteItem) => route.responsibleUserId === userId;
 
@@ -611,58 +659,7 @@ export default function RotasPage() {
     return singleMatch || multiMatch;
   };
 
-  const filteredActiveRoutes = useMemo(() => {
-    return rotasEmAndamento.filter((route) => {
-      if (showOnlyMyActiveRoutes && route.responsibleUserId !== userId) {
-        return false;
-      }
-
-      if (activeStoreFilter !== "todas" && (route.storeId || "") !== activeStoreFilter) {
-        return false;
-      }
-
-      if (activeDriverFilter !== "todos" && route.driverId !== activeDriverFilter) {
-        return false;
-      }
-
-      if (activeDurationFilter === "4h" && getHoursOpen(route.startAt) < 4) {
-        return false;
-      }
-
-      if (activeDurationFilter === "8h" && getHoursOpen(route.startAt) < 8) {
-        return false;
-      }
-
-      if (activeSearch.trim()) {
-        const term = activeSearch.toLowerCase();
-        const composed = [
-          route.vehiclePlate,
-          route.vehicleModel,
-          route.driverName,
-          route.origem || "",
-          route.destino || "",
-          route.storeId || "",
-          route.responsibleUserName || "",
-        ]
-          .join(" ")
-          .toLowerCase();
-
-        if (!composed.includes(term)) {
-          return false;
-        }
-      }
-
-      return true;
-    });
-  }, [
-    activeDriverFilter,
-    activeDurationFilter,
-    activeSearch,
-    activeStoreFilter,
-    rotasEmAndamento,
-    showOnlyMyActiveRoutes,
-    userId,
-  ]);
+  const filteredActiveRoutes = rotasEmAndamento;
 
   const filteredHistoryRoutes = useMemo(() => {
     return historyRoutes
@@ -683,7 +680,7 @@ export default function RotasPage() {
 
         if (
           historyStoreFilter !== "todas" &&
-          (r.storeId || "") !== historyStoreFilter
+          normalizeStoreKey(r.storeId) !== historyStoreFilter
         ) {
           return false;
         }
@@ -726,19 +723,27 @@ export default function RotasPage() {
     userId,
   ]);
 
-  const todayHistoryRoutes = useMemo(() => {
-    const todayKey = getDateKeyFromIso(new Date().toISOString());
-
-    return historyRoutes
-      .filter((route) => getDateKeyFromIso(getRouteReferenceIso(route)) === todayKey)
+  const latestHistoryRoutes = useMemo(() => {
+    return [...historyRoutes]
       .sort((a, b) =>
         getRouteReferenceIso(b).localeCompare(getRouteReferenceIso(a))
-      );
+      )
+      .slice(0, 5);
   }, [historyRoutes]);
 
-  const displayedHistoryRoutes = showAllHistoryRoutes
+  const displayedHistoryRoutes = isHistoryPage
     ? filteredHistoryRoutes
-    : todayHistoryRoutes;
+    : latestHistoryRoutes;
+
+  const selectedVehicle = useMemo(
+    () => vehicles.find((vehicle) => vehicle.id === selectedVehicleId) ?? null,
+    [vehicles, selectedVehicleId]
+  );
+
+  const selectedDriver = useMemo(
+    () => drivers.find((driver) => driver.id === selectedDriverId) ?? null,
+    [drivers, selectedDriverId]
+  );
 
   const availableVehiclesForRoute = useMemo(
     () =>
@@ -751,20 +756,34 @@ export default function RotasPage() {
               maintenance.vehicleId === vehicle.id &&
               maintenance.status === "em_andamento"
           )
-      ),
+      ).sort((a, b) => {
+        const storeCompare = (a.storeId || "").localeCompare(b.storeId || "");
+        if (storeCompare !== 0) return storeCompare;
+        return a.plate.localeCompare(b.plate);
+      }),
     [maintenanceLocks, vehicles]
   );
 
   const availableDriversForRoute = useMemo(
-    () => drivers.filter((driver) => !busyDriverIds.has(driver.id)),
-    [busyDriverIds, drivers]
+    () =>
+      drivers
+        .filter((driver) => !busyDriverIds.has(driver.id))
+        .filter((driver) =>
+          selectedVehicle?.storeId
+            ? normalizeScopeValue(driver.storeId) === normalizeScopeValue(selectedVehicle.storeId)
+            : true
+        )
+        .sort((a, b) => a.name.localeCompare(b.name, "pt-BR")),
+    [busyDriverIds, drivers, selectedVehicle]
   );
 
   const availableDriversForEditing = useMemo(() => {
     if (!editingRoute) return drivers;
 
     const sameStoreDrivers = drivers.filter(
-      (driver) => !editingRoute.storeId || driver.storeId === editingRoute.storeId
+      (driver) =>
+        !editingRoute.storeId ||
+        normalizeScopeValue(driver.storeId) === normalizeScopeValue(editingRoute.storeId)
     );
 
     return sameStoreDrivers.length > 0 ? sameStoreDrivers : drivers;
@@ -798,6 +817,11 @@ export default function RotasPage() {
         return;
       }
 
+      if (!vehicle.storeId) {
+        setErrorMsg("Este veiculo nao possui loja vinculada. Ajuste o cadastro antes de iniciar a rota.");
+        return;
+      }
+
       const vehicleInOpenMaintenance = maintenanceLocks.some(
         (maintenance) =>
           maintenance.vehicleId === vehicle.id &&
@@ -818,6 +842,16 @@ export default function RotasPage() {
       const driver = drivers.find((d) => d.id === selectedDriverId);
       if (!driver) {
         setErrorMsg("Motorista inválido.");
+        return;
+      }
+
+      if (!driver.storeId) {
+        setErrorMsg("Este motorista nao possui loja vinculada. Ajuste o cadastro antes de iniciar a rota.");
+        return;
+      }
+
+      if (normalizeScopeValue(driver.storeId) !== normalizeScopeValue(vehicle.storeId)) {
+        setErrorMsg("Veiculo e motorista precisam pertencer a mesma loja para iniciar a rota.");
         return;
       }
 
@@ -843,6 +877,8 @@ export default function RotasPage() {
       }
 
       const nowIso = new Date().toISOString();
+      const nextOrigem = origem.trim() || null;
+      const nextDestino = destino.trim() || null;
 
       const newRouteData = {
         vehicleId: vehicle.id,
@@ -851,8 +887,8 @@ export default function RotasPage() {
         storeId: vehicle.storeId,
         driverId: driver.id,
         driverName: driver.name,
-        origem: origem || null,
-        destino: destino || null,
+        origem: nextOrigem,
+        destino: nextDestino,
         startKm: startKmNumber,
         startAt: nowIso,
         status: "em_andamento" as RouteStatus,
@@ -951,6 +987,8 @@ export default function RotasPage() {
 
       const distance = endKmNumber - finishingRoute.startKm;
       const nowIso = new Date().toISOString();
+      const nextDestino = endDestinoInput.trim() || null;
+      const nextObs = obsInput.trim() || null;
 
       const finishBatch = writeBatch(db);
 
@@ -959,8 +997,8 @@ export default function RotasPage() {
         endAt: nowIso,
         distanceKm: distance,
         status: "finalizada",
-        destino: endDestinoInput || null,
-        observacoes: obsInput || null,
+        destino: nextDestino,
+        observacoes: nextObs,
         finishedAt: nowIso,
         finishedById: user.id,
         finishedByName: user.name,
@@ -994,8 +1032,8 @@ export default function RotasPage() {
                 endAt: nowIso,
                 distanceKm: distance,
                 status: "finalizada",
-                destino: endDestinoInput || null,
-                observacoes: obsInput || null,
+                destino: nextDestino,
+                observacoes: nextObs,
                 finishedAt: nowIso,
                 finishedById: user.id,
                 finishedByName: user.name,
@@ -1043,6 +1081,12 @@ export default function RotasPage() {
       setErrorMsg("");
       setSuccessMsg("");
 
+      const nextCancelReason = cancelReasonInput.trim();
+      if (!nextCancelReason) {
+        setErrorMsg("Informe o motivo do cancelamento para registrar a ocorrencia.");
+        return;
+      }
+
       const nowIso = new Date().toISOString();
 
       const cancelBatch = writeBatch(db);
@@ -1052,7 +1096,7 @@ export default function RotasPage() {
         canceledAt: nowIso,
         canceledById: user.id,
         canceledByName: user.name,
-        cancelReason: cancelReasonInput || null,
+        cancelReason: nextCancelReason,
       });
 
       if (cancelingRoute.vehicleId) {
@@ -1083,7 +1127,7 @@ export default function RotasPage() {
                 canceledAt: nowIso,
                 canceledById: user.id,
                 canceledByName: user.name,
-                cancelReason: cancelReasonInput || null,
+                cancelReason: nextCancelReason,
               }
             : r
         )
@@ -1198,6 +1242,47 @@ export default function RotasPage() {
     }
   }
 
+  async function handleApagarObs(route: RouteItem) {
+    if (!user || !userCanManageRoute(route)) return;
+
+    const confirmed = window.confirm(
+      "Apagar as observacoes desta rota? Essa acao limpa apenas o campo de observacoes."
+    );
+    if (!confirmed) return;
+
+    try {
+      setSaving(true);
+      setErrorMsg("");
+      setSuccessMsg("");
+
+      const nowIso = new Date().toISOString();
+
+      await updateDoc(doc(db, "routes", route.id), {
+        observacoes: null,
+        updatedObsAt: nowIso,
+        updatedObsById: user.id,
+        updatedObsByName: user.name,
+      });
+
+      setRoutes((prev) =>
+        prev.map((item) =>
+          item.id === route.id ? { ...item, observacoes: null } : item
+        )
+      );
+
+      if (editingObsRouteId === route.id) {
+        fecharObsRoute();
+      }
+
+      setSuccessMsg("Observacoes apagadas com sucesso!");
+    } catch (error) {
+      console.error("Erro ao apagar observacoes:", error);
+      setErrorMsg("Erro ao apagar observacoes. Tente novamente.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function fecharEdicaoRota() {
     setEditingRoute(null);
     setEditDriverId("");
@@ -1205,13 +1290,13 @@ export default function RotasPage() {
     setEditDestinoInput("");
     setEditStartKmInput("");
     setEditEndKmInput("");
+    setEditCancelReasonInput("");
     setEditObsInput("");
     setEditReasonInput("");
   }
 
   function abrirEditarRota(route: RouteItem) {
     if (!isAdmin) return;
-    if (route.status === "cancelada") return;
 
     setFormOpen(false);
     setFinishingRoute(null);
@@ -1225,8 +1310,64 @@ export default function RotasPage() {
     setEditDestinoInput(route.destino ?? "");
     setEditStartKmInput(String(route.startKm ?? ""));
     setEditEndKmInput(route.endKm != null ? String(route.endKm) : "");
+    setEditCancelReasonInput(route.cancelReason ?? "");
     setEditObsInput(route.observacoes ?? "");
     setEditReasonInput("");
+  }
+
+  function renderHistoryRouteActions(route: RouteItem, canEditObs: boolean) {
+    if (!isAdmin && !canEditObs) return null;
+
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            size="icon"
+            variant="outline"
+            className="h-9 w-9 rounded-xl"
+            aria-label={`Acoes da rota ${route.vehiclePlate}`}
+          >
+            <MoreHorizontal className="h-4 w-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-56 rounded-2xl">
+          {isAdmin ? (
+            <DropdownMenuItem onSelect={() => abrirEditarRota(route)}>
+              <PencilLine className="h-4 w-4" />
+              Editar informacoes
+            </DropdownMenuItem>
+          ) : null}
+
+          {canEditObs ? (
+            <DropdownMenuItem onSelect={() => abrirObsRoute(route)}>
+              <Info className="h-4 w-4" />
+              Editar observacoes
+            </DropdownMenuItem>
+          ) : null}
+
+          {canEditObs && route.observacoes ? (
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={() => handleApagarObs(route)}
+            >
+              <XCircle className="h-4 w-4" />
+              Apagar observacoes
+            </DropdownMenuItem>
+          ) : null}
+
+          {isAdmin ? (
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={() => abrirExcluirRota(route)}
+            >
+              <XCircle className="h-4 w-4" />
+              Excluir rota
+            </DropdownMenuItem>
+          ) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
   }
 
   async function handleSalvarEdicaoRota(e: React.FormEvent) {
@@ -1234,13 +1375,42 @@ export default function RotasPage() {
     if (!editingRoute || !user || !isAdmin) return;
 
     try {
-      setSaving(true);
       setErrorMsg("");
       setSuccessMsg("");
 
       const selectedDriver = drivers.find((driver) => driver.id === editDriverId);
       if (!selectedDriver) {
         setErrorMsg("Selecione um motorista valido para a rota.");
+        return;
+      }
+
+      const routeVehicle = vehicles.find((vehicle) => vehicle.id === editingRoute.vehicleId);
+      const referenceStoreId = routeVehicle?.storeId || editingRoute.storeId || "";
+
+      if (!referenceStoreId) {
+        setErrorMsg("A rota nao possui uma loja operacional definida para validacao.");
+        return;
+      }
+
+      if (!selectedDriver.storeId) {
+        setErrorMsg("O motorista selecionado nao possui loja vinculada.");
+        return;
+      }
+
+      if (normalizeScopeValue(selectedDriver.storeId) !== normalizeScopeValue(referenceStoreId)) {
+        setErrorMsg("O motorista precisa pertencer a mesma loja do veiculo da rota.");
+        return;
+      }
+
+      const driverBusyInAnotherRoute = routes.some(
+        (route) =>
+          route.id !== editingRoute.id &&
+          route.status === "em_andamento" &&
+          route.driverId === selectedDriver.id
+      );
+
+      if (editingRoute.status === "em_andamento" && driverBusyInAnotherRoute) {
+        setErrorMsg("Esse motorista ja esta em outra rota em andamento.");
         return;
       }
 
@@ -1267,20 +1437,53 @@ export default function RotasPage() {
           setErrorMsg("O KM final nao pode ser menor que o KM inicial.");
           return;
         }
-
-        if (!editReasonInput.trim()) {
-          setErrorMsg("Informe o motivo da alteracao desta rota finalizada.");
-          return;
-        }
+      } else if (editingRoute.status === "cancelada" && !editCancelReasonInput.trim()) {
+        setErrorMsg("Informe o motivo do cancelamento para manter a rota auditavel.");
+        return;
       }
 
       const nextOrigem = editOrigemInput.trim() || null;
       const nextDestino = editDestinoInput.trim() || null;
+      const nextCancelReason =
+        editingRoute.status === "cancelada"
+          ? editCancelReasonInput.trim() || null
+          : editingRoute.cancelReason ?? null;
       const nextObs = editObsInput.trim() || null;
+      const nextEditReason = editReasonInput.trim() || null;
+
+      if (!nextEditReason) {
+        setErrorMsg("Informe o motivo da alteracao para manter a auditoria da rota.");
+        return;
+      }
+
       const nextDistance =
         editingRoute.status === "finalizada" && endKmNumber != null
           ? endKmNumber - startKmNumber
           : editingRoute.distanceKm ?? null;
+
+      const hasChanges =
+        selectedDriver.id !== editingRoute.driverId ||
+        nextOrigem !== (editingRoute.origem ?? null) ||
+        nextDestino !== (editingRoute.destino ?? null) ||
+        startKmNumber !== editingRoute.startKm ||
+        endKmNumber !== (editingRoute.endKm ?? null) ||
+        nextCancelReason !== (editingRoute.cancelReason ?? null) ||
+        nextObs !== (editingRoute.observacoes ?? null);
+
+      if (!hasChanges) {
+        setErrorMsg("Faça alguma alteracao antes de salvar a rota.");
+        return;
+      }
+
+      const confirmed = window.confirm(
+        `Confirmar ajuste administrativo desta rota?\n\nVeiculo: ${editingRoute.vehiclePlate}\nMotorista: ${selectedDriver.name}\nMotivo: ${nextEditReason}`
+      );
+
+      if (!confirmed) {
+        return;
+      }
+
+      setSaving(true);
 
       const nowIso = new Date().toISOString();
       const routeDocRef = doc(db, "routes", editingRoute.id);
@@ -1294,14 +1497,14 @@ export default function RotasPage() {
         startKm: startKmNumber,
         endKm: endKmNumber,
         distanceKm: nextDistance,
+        cancelReason: nextCancelReason,
         observacoes: nextObs,
         updatedAt: nowIso,
         updatedById: user.id,
         updatedByName: user.name,
-        editReason: editReasonInput.trim() || null,
+        editReason: nextEditReason,
       });
 
-      const routeVehicle = vehicles.find((vehicle) => vehicle.id === editingRoute.vehicleId);
       let shouldSyncVehicleKm = false;
       let nextVehicleKm: number | null = null;
 
@@ -1322,6 +1525,20 @@ export default function RotasPage() {
           if (!hasNewerRouteForVehicle) {
             shouldSyncVehicleKm = true;
             nextVehicleKm = endKmNumber;
+          }
+        } else if (editingRoute.status === "cancelada") {
+          const referenceIso = getRouteReferenceIso(editingRoute);
+          const hasNewerRouteForVehicle = routes.some(
+            (route) =>
+              route.id !== editingRoute.id &&
+              route.vehicleId === editingRoute.vehicleId &&
+              route.status !== "cancelada" &&
+              getRouteReferenceIso(route) > referenceIso
+          );
+
+          if (!hasNewerRouteForVehicle) {
+            shouldSyncVehicleKm = true;
+            nextVehicleKm = startKmNumber;
           }
         }
 
@@ -1346,6 +1563,7 @@ export default function RotasPage() {
                 startKm: startKmNumber,
                 endKm: endKmNumber,
                 distanceKm: nextDistance,
+                cancelReason: nextCancelReason,
                 observacoes: nextObs,
                 updatedAt: nowIso,
                 updatedById: user.id,
@@ -1376,19 +1594,202 @@ export default function RotasPage() {
     }
   }
 
+  const fechamentoHistoricoPanel = (
+    <Card className="app-panel min-w-0 gap-0 overflow-hidden py-0">
+      <div className="border-b border-border px-5 py-5">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-yellow-400/15 dark:bg-yellow-300/10">
+            <History className="h-5 w-5 text-yellow-600 dark:text-yellow-200" />
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+              Fechamento e historico
+            </h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Indicadores de volume e encerramento da operacao.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-4 p-4 md:p-5">
+        <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
+          <div className="app-panel-muted p-4">
+            <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+              KM rodado
+            </p>
+            <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
+              {totalKmRodado.toFixed(1)} km
+            </p>
+          </div>
+          <div className="app-panel-muted p-4">
+            <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+              Tempo medio
+            </p>
+            <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
+              {formatDurationHours(tempoMedioFinalizacao)}
+            </p>
+          </div>
+          <div className="app-panel-muted p-4">
+            <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+              Finalizadas
+            </p>
+            <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
+              {rotasFinalizadas.length}
+            </p>
+          </div>
+          <div className="app-panel-muted p-4">
+            <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+              Veiculos que rodaram
+            </p>
+            <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
+              {uniqueVehiclesCount}
+            </p>
+          </div>
+        </div>
+
+        {rotasLongasEmAndamento.length > 0 ? (
+          <div className="rounded-2xl border border-yellow-300/60 bg-yellow-400/10 p-4 dark:border-yellow-300/20 dark:bg-yellow-300/10">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="h-4 w-4 text-yellow-700 dark:text-yellow-200" />
+              <p className="text-sm font-semibold text-slate-950 dark:text-white">
+                Pontos que pedem atencao
+              </p>
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-3">
+              {rotasLongasEmAndamento.slice(0, 3).map((route) => (
+                <div
+                  key={route.id}
+                  className="min-w-0 break-words rounded-xl border border-yellow-300/40 bg-white/70 px-3 py-2 text-sm text-slate-700 dark:border-yellow-300/15 dark:bg-black/30 dark:text-slate-200"
+                >
+                  <span className="font-mono">{route.vehiclePlate}</span> ·{" "}
+                  {route.driverName} · {formatDurationHours(getHoursOpen(route.startAt))}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="app-panel-muted rounded-2xl p-4 text-sm text-slate-500 dark:text-slate-400">
+            Nenhuma rota longa no momento. A operacao esta dentro do esperado.
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+
+  const fleetAvailabilityPanel = (
+    <Card className="app-panel gap-0 overflow-hidden py-0">
+      <div className="border-b border-border px-5 py-5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-emerald-500/10 dark:bg-emerald-400/10">
+              <Gauge className="h-5 w-5 text-emerald-600 dark:text-emerald-300" />
+            </div>
+            <div className="min-w-0">
+              <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+                Disponibilidade da frota
+              </h2>
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                A barra reduz conforme os veiculos entram em uso.
+              </p>
+            </div>
+          </div>
+
+          <span className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-semibold text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-500/10 dark:text-emerald-200">
+            {vehicleAvailabilitySummary.availablePercent}% disponivel
+          </span>
+        </div>
+      </div>
+
+      <div className="space-y-5 p-4 md:p-5">
+        {vehicleAvailabilitySummary.total === 0 ? (
+          <div className="app-panel-muted rounded-2xl p-4 text-sm text-slate-500 dark:text-slate-400">
+            Nenhum veiculo cadastrado para calcular a disponibilidade.
+          </div>
+        ) : (
+          <>
+            <div className="space-y-2">
+              <div className="flex items-end justify-between gap-3">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Frota disponivel
+                  </p>
+                  <p className="mt-1 text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">
+                    {vehicleAvailabilitySummary.disponivel} de{" "}
+                    {vehicleAvailabilitySummary.total}
+                  </p>
+                </div>
+                <p className="text-right text-xs text-slate-500 dark:text-slate-400">
+                  {vehicleAvailabilitySummary.ocupados} em uso
+                </p>
+              </div>
+
+              <div
+                className="relative h-5 overflow-hidden rounded-full border border-slate-200 bg-slate-100 dark:border-white/10 dark:bg-white/[0.06]"
+                aria-label={`Disponibilidade da frota ${vehicleAvailabilitySummary.availablePercent}%`}
+              >
+                <div
+                  className="relative h-full overflow-hidden rounded-full bg-[linear-gradient(90deg,#22c55e,#84cc16,#facc15)] shadow-[0_0_24px_rgba(34,197,94,0.24)] transition-[width] duration-700 ease-out"
+                  style={{
+                    width: `${vehicleAvailabilitySummary.availablePercent}%`,
+                  }}
+                >
+                  <div className="fleet-progress-shine pointer-events-none absolute inset-y-0 -left-1/2 w-1/2 bg-[linear-gradient(90deg,transparent,rgba(255,255,255,0.42),transparent)] opacity-70" />
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="app-panel-muted p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">
+                  Livres
+                </p>
+                <p className="mt-1 text-lg font-semibold text-emerald-700 dark:text-emerald-200">
+                  {vehicleAvailabilitySummary.disponivel}
+                </p>
+              </div>
+              <div className="app-panel-muted p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">
+                  Em rota
+                </p>
+                <p className="mt-1 text-lg font-semibold text-blue-700 dark:text-blue-200">
+                  {vehicleAvailabilitySummary.emRota}
+                </p>
+              </div>
+              <div className="app-panel-muted p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">
+                  Manutencao
+                </p>
+                <p className="mt-1 text-lg font-semibold text-yellow-700 dark:text-yellow-200">
+                  {vehicleAvailabilitySummary.manutencao}
+                </p>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </Card>
+  );
+
   return (
     <div className="app-page">
       {/* Cabeçalho */}
       <PageHeader
-        eyebrow="Operacao em campo"
-        title="Rotas da frota"
-        description="Inicie, acompanhe e finalize rotas em um fluxo mais claro, com historico, status e leitura operacional em tempo real."
+        eyebrow={isHistoryPage ? "Historico operacional" : "Operacao em campo"}
+        title={isHistoryPage ? "Rotas realizadas" : "Rotas da frota"}
+        description={
+          isHistoryPage
+            ? "Consulte rotas finalizadas, canceladas e editadas com filtros dedicados para auditoria e acompanhamento."
+            : "Tela dedicada para iniciar e finalizar rotas, com foco no trabalho do dia a dia."
+        }
         icon={RouteIcon}
         badges={
           <>
             <span className="app-chip">
               <span className="h-2 w-2 rounded-full bg-yellow-300" />
-              {totalRotas} rotas no historico
+              {isHistoryPage
+                ? `${totalRotas} rotas no historico`
+                : `${latestHistoryRoutes.length} recentes`}
             </span>
             <span className="app-chip border-blue-300/20 bg-blue-400/10 text-blue-100">
               <span className="h-2 w-2 rounded-full bg-blue-300" />
@@ -1401,17 +1802,32 @@ export default function RotasPage() {
           </>
         }
         actions={
-          <Button
-            onClick={() => {
-              resetForm();
-              setFinishingRoute(null);
-              setCancelingRoute(null);
-              fecharEdicaoRota();
-              setFormOpen(true);
-            }}
-          >
-            + Nova rota
-          </Button>
+          isHistoryPage ? (
+            <Button variant="outline" onClick={() => router.push("/rotas")}>
+              Abrir operacao
+            </Button>
+          ) : (
+            <>
+              <Button
+                onClick={() => {
+                  resetForm();
+                  setFinishingRoute(null);
+                  setCancelingRoute(null);
+                  fecharEdicaoRota();
+                  setFormOpen(true);
+                }}
+              >
+                + Nova rota
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => router.push("/rotas/realizadas")}
+              >
+                Ver todas as rotas
+              </Button>
+            </>
+          )
         }
       />
 
@@ -1419,6 +1835,12 @@ export default function RotasPage() {
       {errorMsg ? <StatusBanner tone="error">{errorMsg}</StatusBanner> : null}
       {successMsg ? <StatusBanner tone="success">{successMsg}</StatusBanner> : null}
 
+      {!isHistoryPage ? fleetAvailabilityPanel : null}
+
+      {isHistoryPage ? fechamentoHistoricoPanel : null}
+
+      {!isHistoryPage ? (
+        <>
       <div className="hidden grid grid-cols-1 gap-4">
         {/* Resumo em cards */}
         <div className="hidden space-y-4">
@@ -1435,7 +1857,7 @@ export default function RotasPage() {
               </p>
             </div>
 
-            <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2 xl:grid-cols-4 md:p-5">
+            <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2 2xl:grid-cols-4 md:p-5">
               <div className="app-panel-muted p-4">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
@@ -1447,7 +1869,7 @@ export default function RotasPage() {
                   {rotasEmAndamento.length}
                 </p>
                 <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                  {filteredActiveRoutes.length} rota(s) visiveis com os filtros ativos.
+                  {rotasEmAndamento.length} rota(s) em acompanhamento agora.
                 </p>
               </div>
 
@@ -1691,7 +2113,7 @@ export default function RotasPage() {
       </div>
 
       {/* Rotas em andamento + Gráfico de status */}
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1.2fr)] gap-4">
+      <div className="grid grid-cols-1 gap-4 2xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1.2fr)]">
         {/* Esquerda: rotas em andamento */}
         <div className="space-y-4">
           <Card className="app-panel p-4 md:p-5">
@@ -1709,163 +2131,130 @@ export default function RotasPage() {
               </span>
             </div>
 
-            <div className="mb-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
-              <div className="relative">
-                <Input
-                  value={activeSearch}
-                  onChange={(e) => setActiveSearch(e.target.value)}
-                  placeholder="Buscar por placa, motorista, origem ou loja"
-                  className="pr-9"
-                />
-                <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            {loading ? (
+              <div className="space-y-3">
+                {Array.from({ length: 3 }).map((_, index) => (
+                  <div
+                    key={index}
+                    className="app-skeleton-block h-[132px] rounded-[24px]"
+                  />
+                ))}
               </div>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                <select
-                  className="app-select"
-                  value={activeStoreFilter}
-                  onChange={(e) => setActiveStoreFilter(e.target.value)}
-                >
-                  <option value="todas">Todas as lojas</option>
-                  {activeStoreOptions.map((store) => (
-                    <option key={store} value={store}>
-                      {store}
-                    </option>
-                  ))}
-                </select>
-
-                <select
-                  className="app-select"
-                  value={activeDriverFilter}
-                  onChange={(e) => setActiveDriverFilter(e.target.value)}
-                >
-                  <option value="todos">Todos os motoristas</option>
-                  {activeDriverOptions.map(([id, name]) => (
-                    <option key={id} value={id}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-
-                <select
-                  className="app-select"
-                  value={activeDurationFilter}
-                  onChange={(e) =>
-                    setActiveDurationFilter(e.target.value as "todas" | "4h" | "8h")
-                  }
-                >
-                  <option value="todas">Qualquer duracao</option>
-                  <option value="4h">4h ou mais</option>
-                  <option value="8h">8h ou mais</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="mb-4 flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant={showOnlyMyActiveRoutes ? "default" : "outline"}
-                className={
-                  showOnlyMyActiveRoutes
-                    ? "bg-yellow-400 text-black hover:bg-yellow-300 dark:bg-yellow-300 dark:text-black"
-                    : ""
-                }
-                onClick={() => setShowOnlyMyActiveRoutes((prev) => !prev)}
-              >
-                {showOnlyMyActiveRoutes ? "Mostrando minhas rotas" : "Mostrar so minhas rotas"}
-              </Button>
-
-              {(activeSearch ||
-                activeStoreFilter !== "todas" ||
-                activeDriverFilter !== "todos" ||
-                activeDurationFilter !== "todas" ||
-                showOnlyMyActiveRoutes) && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setActiveSearch("");
-                    setActiveStoreFilter("todas");
-                    setActiveDriverFilter("todos");
-                    setActiveDurationFilter("todas");
-                    setShowOnlyMyActiveRoutes(false);
-                  }}
-                >
-                  Limpar filtros
-                </Button>
-              )}
-            </div>
-
-            {filteredActiveRoutes.length === 0 ? (
+            ) : filteredActiveRoutes.length === 0 ? (
               <p className="text-sm text-slate-500 dark:text-slate-400">
-                Nenhuma rota em andamento encontrada com os filtros atuais.
+                Nenhuma rota em andamento no momento.
               </p>
             ) : (
-              <div className="space-y-2">
+              <div className="space-y-3">
                 {filteredActiveRoutes.map((r) => {
                   const owner = isOwner(r);
                   const canManage = userCanManageRoute(r);
+                  const canUseMenu = canManage || isAdmin;
 
                   return (
                     <div
                       key={r.id}
-                      className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 bg-neutral-950/60 px-3 py-2"
+                      className="grid gap-4 rounded-[24px] border border-slate-200 bg-white/86 p-4 shadow-[0_12px_28px_rgba(15,23,42,0.04)] transition hover:border-blue-200 hover:bg-blue-50/35 dark:border-white/10 dark:bg-white/[0.04] dark:hover:border-yellow-400/20 dark:hover:bg-yellow-400/[0.03] 2xl:grid-cols-[minmax(0,1fr)_176px]"
                     >
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-gray-100 truncate">
-                          <span className="font-mono">{r.vehiclePlate}</span> ·{" "}
-                          {r.vehicleModel}
-                          {r.storeId && (
-                            <span className="ml-1 text-[11px] text-gray-500">
-                              ({r.storeId})
-                            </span>
-                          )}
-                        </p>
-                        <p className="text-xs text-gray-400 truncate">
-                          Motorista:{" "}
-                          <span className="text-gray-200">
-                            {r.driverName || "-"}
-                          </span>
-                        </p>
+                      <div className="min-w-0 space-y-3">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-slate-950 dark:text-white">
+                              <span className="font-mono">{r.vehiclePlate}</span> ·{" "}
+                              {r.vehicleModel}
+                            </p>
+                            <p className="mt-1 truncate text-xs text-slate-500 dark:text-slate-400">
+                              Motorista:{" "}
+                              <span className="font-medium text-slate-700 dark:text-slate-200">
+                                {r.driverName || "-"}
+                              </span>
+                            </p>
+                          </div>
 
-                        {owner && (
-                          <p className="text-[11px] text-yellow-300 mt-0.5">
-                            Minha rota
-                          </p>
-                        )}
-
-                        <p className="text-xs text-gray-500 truncate flex items-center gap-1">
-                          <MapPin className="w-3 h-3 text-yellow-400 shrink-0" />
-                          {(r.origem || "-") + " → " + (r.destino || "-")}
-                        </p>
-                      </div>
-                      <div className="flex flex-col items-end gap-1">
-                        <p className="text-xs text-gray-400 flex items-center gap-1">
-                          <Clock className="w-3 h-3 text-gray-400" />
-                          {r.startAt
-                            ? new Date(r.startAt).toLocaleTimeString("pt-BR", {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })
-                            : "-"}
-                        </p>
-                        <p className="text-[11px] text-gray-400">
-                          KM inicial:{" "}
-                          <span className="font-mono text-gray-100">
-                            {r.startKm} km
-                          </span>
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                          {isAdmin && (
-                            <ActionIconButton action="edit" onClick={() => abrirEditarRota(r)} />
-                          )}
-                          {canManage && (
-                            <>
-                              <ActionIconButton action="complete" onClick={() => abrirFinalizarRota(r)} />
-                              <ActionIconButton action="cancel" onClick={() => abrirCancelarRota(r)} />
-                            </>
-                          )}
+                          <div className="flex shrink-0 flex-wrap gap-2">
+                            {owner ? (
+                              <span className="rounded-full border border-yellow-300/70 bg-yellow-400/15 px-2.5 py-1 text-[11px] font-semibold text-yellow-700 dark:border-yellow-300/20 dark:bg-yellow-300/10 dark:text-yellow-200">
+                                Minha rota
+                              </span>
+                            ) : null}
+                            {r.storeId ? (
+                              <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-medium text-blue-700 dark:border-blue-400/20 dark:bg-blue-500/10 dark:text-blue-200">
+                                {r.storeId}
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
+
+                        <div className="grid gap-2 text-xs text-slate-500 dark:text-slate-400 sm:grid-cols-3">
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-2 dark:border-white/10 dark:bg-black/10">
+                            <span className="flex items-center gap-1.5">
+                              <Clock className="h-3.5 w-3.5 text-blue-600 dark:text-blue-300" />
+                              {r.startAt
+                                ? new Date(r.startAt).toLocaleTimeString("pt-BR", {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })
+                                : "-"}
+                            </span>
+                          </div>
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-2 dark:border-white/10 dark:bg-black/10">
+                            <span className="font-mono text-slate-700 dark:text-slate-200">
+                              {r.startKm} km
+                            </span>
+                          </div>
+                          <div className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50/80 px-3 py-2 dark:border-white/10 dark:bg-black/10">
+                            <span className="flex min-w-0 items-center gap-1.5">
+                              <MapPin className="h-3.5 w-3.5 shrink-0 text-yellow-600 dark:text-yellow-300" />
+                              <span className="truncate">
+                                {(r.origem || "-") + " -> " + (r.destino || "-")}
+                              </span>
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex h-full flex-row items-stretch gap-2 2xl:flex-col 2xl:justify-center">
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={!canManage}
+                          className="h-10 flex-1 bg-emerald-600 text-white hover:bg-emerald-500 lg:flex-none"
+                          onClick={() => abrirFinalizarRota(r)}
+                        >
+                          Finalizar
+                        </Button>
+
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="outline"
+                              disabled={!canUseMenu}
+                              className="h-10 w-12 shrink-0 border-slate-200 bg-white text-slate-700 hover:bg-blue-50 dark:border-white/10 dark:bg-slate-950/60 dark:text-slate-100 dark:hover:bg-yellow-400/10 2xl:w-full"
+                              aria-label={`Mais acoes da rota ${r.vehiclePlate}`}
+                            >
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="w-44 rounded-2xl">
+                            {isAdmin ? (
+                              <DropdownMenuItem onSelect={() => abrirEditarRota(r)}>
+                                <PencilLine className="h-4 w-4" />
+                                Editar
+                              </DropdownMenuItem>
+                            ) : null}
+                            {canManage ? (
+                              <DropdownMenuItem
+                                variant="destructive"
+                                onSelect={() => abrirCancelarRota(r)}
+                              >
+                                <XCircle className="h-4 w-4" />
+                                Cancelar
+                              </DropdownMenuItem>
+                            ) : null}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     </div>
                   );
@@ -1874,144 +2263,10 @@ export default function RotasPage() {
             )}
           </Card>
 
-          <Card className="app-panel gap-0 overflow-hidden py-0">
-            <div className="border-b border-border px-5 py-5">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-yellow-400/15 dark:bg-yellow-300/10">
-                  <History className="h-5 w-5 text-yellow-600 dark:text-yellow-200" />
-                </div>
-                <div>
-                  <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
-                    Fechamento e historico
-                  </h2>
-                  <p className="text-sm text-slate-500 dark:text-slate-400">
-                    Indicadores de volume e encerramento da operacao.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-4 p-4 md:p-5">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="app-panel-muted p-4">
-                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
-                    KM rodado
-                  </p>
-                  <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
-                    {totalKmRodado.toFixed(1)} km
-                  </p>
-                </div>
-                <div className="app-panel-muted p-4">
-                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
-                    Tempo medio
-                  </p>
-                  <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
-                    {formatDurationHours(tempoMedioFinalizacao)}
-                  </p>
-                </div>
-                <div className="app-panel-muted p-4">
-                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
-                    Finalizadas
-                  </p>
-                  <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
-                    {rotasFinalizadas.length}
-                  </p>
-                </div>
-                <div className="app-panel-muted p-4">
-                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
-                    Veiculos que rodaram
-                  </p>
-                  <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
-                    {uniqueVehiclesCount}
-                  </p>
-                </div>
-              </div>
-
-              {rotasLongasEmAndamento.length > 0 ? (
-                <div className="rounded-2xl border border-yellow-300/60 bg-yellow-400/10 p-4 dark:border-yellow-300/20 dark:bg-yellow-300/10">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-yellow-700 dark:text-yellow-200" />
-                    <p className="text-sm font-semibold text-slate-950 dark:text-white">
-                      Pontos que pedem atencao
-                    </p>
-                  </div>
-                  <div className="mt-3 space-y-2">
-                    {rotasLongasEmAndamento.slice(0, 3).map((route) => (
-                      <div
-                        key={route.id}
-                        className="rounded-xl border border-yellow-300/40 bg-white/70 px-3 py-2 text-sm text-slate-700 dark:border-yellow-300/15 dark:bg-black/30 dark:text-slate-200"
-                      >
-                        <span className="font-mono">{route.vehiclePlate}</span> · {route.driverName} ·{" "}
-                        {formatDurationHours(getHoursOpen(route.startAt))}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div className="app-panel-muted rounded-2xl p-4 text-sm text-slate-500 dark:text-slate-400">
-                  Nenhuma rota longa no momento. A operacao esta dentro do esperado.
-                </div>
-              )}
-            </div>
-          </Card>
         </div>
 
-        {/* Direita: gráfico de status dos veículos */}
+        {/* Direita: veiculos disponiveis */}
         <div className="space-y-4">
-          <Card className="p-4 bg-neutral-950 border border-neutral-800">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <div className="p-2 rounded-full bg-yellow-500/10">
-                  <PieIcon className="w-4 h-4 text-yellow-400" />
-                </div>
-                <p className="text-sm font-semibold text-gray-100">
-                  Status dos veículos
-                </p>
-              </div>
-              <span className="text-[11px] text-gray-500">
-                {vehicles.length} veículo(s) cadastrados
-              </span>
-            </div>
-            {vehicleStatusData.length === 0 ? (
-              <p className="text-sm text-gray-400">
-                Nenhum veículo cadastrado ou sem status definido.
-              </p>
-            ) : (
-              <div className="h-52">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={vehicleStatusData}
-                      dataKey="value"
-                      nameKey="name"
-                      innerRadius={50}
-                      outerRadius={80}
-                      paddingAngle={3}
-                    >
-                      {vehicleStatusData.map((entry, index) => (
-                        <Cell
-                          key={`cell-${index}`}
-                          fill={
-                            vehicleStatusColors[
-                              index % vehicleStatusColors.length
-                            ]
-                          }
-                        />
-                      ))}
-                    </Pie>
-                    <ReTooltip content={<CustomPieTooltip />} />
-                    <Legend
-                      wrapperStyle={{ fontSize: 11 }}
-                      formatter={(value: any) => (
-                        <span className="text-xs text-gray-300">{value}</span>
-                      )}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </Card>
-
           <div className="space-y-4">
           <Card className="app-panel gap-0 overflow-hidden py-0">
             <div className="border-b border-border px-5 py-5">
@@ -2079,41 +2334,6 @@ export default function RotasPage() {
                       Mostrando 5 de {availableVehiclesNow.length} veiculos disponiveis no momento.
                     </div>
                   ) : null}
-
-                  {false && vehicleStatusData.map((status) => {
-                  const percent = status.total
-                    ? Math.round((status.value / status.total) * 100)
-                    : 0;
-
-                  const accentClass =
-                    status.name === "Disponíveis"
-                      ? "bg-yellow-400 dark:bg-yellow-300"
-                      : status.name === "Em rota"
-                      ? "bg-blue-500 dark:bg-blue-300"
-                      : "bg-slate-900 dark:bg-white";
-
-                  return (
-                    <div key={status.name} className="space-y-2">
-                      <div className="flex items-center justify-between gap-3 text-sm">
-                        <span className="font-medium text-slate-700 dark:text-slate-200">
-                          {status.name}
-                        </span>
-                        <span className="text-slate-500 dark:text-slate-400">
-                          {status.value} de {status.total}
-                        </span>
-                      </div>
-                      <div className="h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
-                        <div
-                          className={`h-full rounded-full ${accentClass}`}
-                          style={{ width: `${percent}%` }}
-                        />
-                      </div>
-                      <p className="text-xs text-slate-500 dark:text-slate-400">
-                        {percent}% da frota nesta situacao.
-                      </p>
-                    </div>
-                  );
-                  })}
                 </>
               )}
             </div>
@@ -2274,6 +2494,8 @@ export default function RotasPage() {
           </Card>
         </div>
       )}
+        </>
+      ) : null}
 
       <Dialog
         open={formOpen}
@@ -2367,6 +2589,46 @@ export default function RotasPage() {
                 />
               </div>
             </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="app-panel-muted p-4">
+                <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                  Veiculo selecionado
+                </p>
+                <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
+                  {selectedVehicle
+                    ? `${selectedVehicle.plate} · ${selectedVehicle.model}`
+                    : "Selecione um veiculo disponivel"}
+                </p>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  {selectedVehicle
+                    ? `${selectedVehicle.storeId || "Loja nao informada"} · ${getVehicleStatusLabel(selectedVehicle.status)}`
+                    : "A rota usa apenas veiculos livres, fora de manutencao e sem bloqueio operacional."}
+                </p>
+              </div>
+
+              <div className="app-panel-muted p-4">
+                <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                  Motorista e cobertura
+                </p>
+                <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
+                  {selectedDriver
+                    ? `${selectedDriver.name} · ${selectedDriver.storeId || "Loja nao informada"}`
+                    : "Selecione um motorista da mesma loja"}
+                </p>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  {selectedVehicle
+                    ? `${getResponsibleCoverageCount(selectedVehicle)} responsavel(is) vinculado(s) · KM atual ${selectedVehicle.currentKm ?? "nao informado"}`
+                    : "O sistema sugere o KM atual do veiculo quando ele ja estiver registrado."}
+                </p>
+              </div>
+            </div>
+
+            {errorMsg ? (
+              <p className="text-sm font-medium text-red-500 dark:text-red-300">
+                {errorMsg}
+              </p>
+            ) : null}
 
             <DialogFooter>
               <Button
@@ -2565,26 +2827,18 @@ export default function RotasPage() {
                   placeholder="Explique o motivo para manter o historico mais confiavel."
                   className="app-textarea min-h-[110px]"
                 />
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  O motivo do cancelamento agora e obrigatorio para preservar o contexto da operacao.
+                </p>
               </div>
 
               <DialogFooter>
-                <Button
-                  type="button"
-                  variant="destructive"
-                  onClick={() => {
-                    setCancelingRoute(null);
-                    setCancelReasonInput("");
-                    setErrorMsg("");
-                  }}
-                >
-                  Cancelar
-                </Button>
                 <Button
                   type="submit"
                   disabled={saving}
                   variant="destructive"
                 >
-                  {saving ? "Cancelando..." : "Cancelar"}
+                  {saving ? "Cancelando..." : "Cancelar rota"}
                 </Button>
               </DialogFooter>
             </form>
@@ -2683,7 +2937,11 @@ export default function RotasPage() {
                         Status
                       </p>
                       <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
-                        {editingRoute.status === "em_andamento" ? "Em andamento" : "Finalizada"}
+                        {editingRoute.status === "em_andamento"
+                          ? "Em andamento"
+                          : editingRoute.status === "cancelada"
+                            ? "Cancelada"
+                            : "Finalizada"}
                       </p>
                       <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                         Inicio: {formatRouteDateTime(editingRoute.startAt)}
@@ -2759,20 +3017,45 @@ export default function RotasPage() {
                       </div>
                     ) : null}
 
-                    {editingRoute.status === "finalizada" ? (
+                    {editingRoute.status === "cancelada" ? (
                       <div className="md:col-span-2">
                         <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
-                          Motivo da alteracao
+                          Motivo do cancelamento
                         </label>
                         <textarea
-                          value={editReasonInput}
-                          onChange={(e) => setEditReasonInput(e.target.value)}
-                          placeholder="Explique por que esta rota finalizada esta sendo ajustada."
+                          value={editCancelReasonInput}
+                          onChange={(e) => setEditCancelReasonInput(e.target.value)}
+                          placeholder="Explique por que esta rota foi cancelada."
                           className="app-textarea min-h-[90px]"
                         />
-                        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                          Este motivo sera salvo junto com a auditoria da edicao.
-                        </p>
+                      </div>
+                    ) : null}
+
+                    <div className="md:col-span-2">
+                      <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                        Motivo da alteracao
+                      </label>
+                      <textarea
+                        value={editReasonInput}
+                        onChange={(e) => setEditReasonInput(e.target.value)}
+                        placeholder="Explique por que este ajuste administrativo esta sendo feito."
+                        className="app-textarea min-h-[90px]"
+                      />
+                      <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                        Este motivo sera salvo junto com a auditoria da edicao.
+                      </p>
+                    </div>
+
+                    {editingRoute.status === "finalizada" ? (
+                      <div className="md:col-span-2">
+                        <div className="app-panel-muted p-4">
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                            Distancia final
+                          </p>
+                          <p className="mt-2 text-sm text-slate-700 dark:text-slate-200">
+                            Distancia recalculada automaticamente ao salvar.
+                          </p>
+                        </div>
                       </div>
                     ) : null}
 
@@ -2821,7 +3104,7 @@ export default function RotasPage() {
       </Dialog>
 
       {/* Histórico de rotas */}
-      <Card className="app-panel gap-0 overflow-hidden py-0">
+      <Card className="app-panel min-w-0 gap-0 overflow-hidden py-0">
         <div className="border-b border-border px-5 py-5">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-yellow-400/15 dark:bg-yellow-300/10">
@@ -2829,41 +3112,44 @@ export default function RotasPage() {
             </div>
             <div>
               <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
-                Historico de rotas
+                {isHistoryPage ? "Historico de rotas" : "Ultimas 5 rotas"}
               </h2>
               <p className="text-sm text-slate-500 dark:text-slate-400">
-                Consulte encerramentos, cancelamentos e ajustes administrativos.
+                {isHistoryPage
+                  ? "Consulte encerramentos, cancelamentos e ajustes administrativos."
+                  : "A tela de operacao mostra apenas os registros mais recentes."}
               </p>
             </div>
           </div>
         </div>
 
-        <div className="space-y-4 p-4 md:p-5">
+        <div className="min-w-0 space-y-4 p-4 md:p-5">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
+          <div className="min-w-0">
             <h3 className="text-base font-semibold text-slate-950 dark:text-white">
-              {showAllHistoryRoutes ? "Historico de rotas" : "Rotas de hoje"}
+              {isHistoryPage ? "Historico de rotas" : "Rotas recentes"}
             </h3>
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              {showAllHistoryRoutes
+              {isHistoryPage
                 ? "Veja o historico completo com filtros por mes, status e motorista."
-                : "Lista rapida das rotas encerradas ou canceladas hoje."}
+                : "Apenas as ultimas 5 rotas encerradas ou canceladas ficam aqui."}
             </p>
           </div>
 
           <Button
             type="button"
             variant="outline"
-            onClick={() => setShowAllHistoryRoutes((prev) => !prev)}
+            className="w-full md:w-auto"
+            onClick={() => router.push(isHistoryPage ? "/rotas" : "/rotas/realizadas")}
           >
-            {showAllHistoryRoutes ? "Voltar para hoje" : "Ver todas"}
+            {isHistoryPage ? "Voltar para rotas" : "Ver todas as rotas"}
           </Button>
         </div>
 
-        {showAllHistoryRoutes && (
-        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-          <div className="flex-1 max-w-md">
-            <label className="block text-xs text-gray-400 mb-1">
+        {isHistoryPage && (
+        <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-6">
+          <div className="min-w-0 sm:col-span-2 lg:col-span-4 2xl:col-span-2">
+            <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
               Buscar por veículo, motorista, origem, destino, loja ou observações
             </label>
             <div className="relative">
@@ -2871,33 +3157,33 @@ export default function RotasPage() {
                 placeholder="Ex: ABC1D23, João, Cedral, Destack..."
                 value={historySearch}
                 onChange={(e) => setHistorySearch(e.target.value)}
-                className="bg-neutral-900 border-neutral-700 text-gray-100 placeholder:text-gray-500 pr-9 text-sm"
+                className="app-field pr-9 text-sm"
               />
-              <Search className="w-4 h-4 text-gray-500 absolute right-2.5 top-1/2 -translate-y-1/2" />
+              <Search className="absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-3">
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">
+          <div className="contents">
+            <div className="min-w-0">
+              <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                 Mês de referência
               </label>
               <Input
                 type="month"
                 value={historyMonth}
                 onChange={(e) => setHistoryMonth(e.target.value)}
-                className="bg-neutral-900 border-neutral-700 text-gray-100 text-xs"
+                className="app-field text-xs"
               />
             </div>
 
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">
+            <div className="min-w-0">
+              <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                 Status
               </label>
-              <div className="flex items-center gap-2">
-                <Filter className="w-4 h-4 text-gray-500 hidden md:block" />
+              <div className="relative">
+                <Filter className="pointer-events-none absolute left-3 top-1/2 hidden h-4 w-4 -translate-y-1/2 text-slate-400 md:block" />
                 <select
-                  className="rounded-md bg-neutral-900 border border-neutral-700 px-3 py-2 text-xs text-gray-100"
+                  className="app-select text-xs md:pl-9"
                   value={historyStatusFilter}
                   onChange={(e) =>
                     setHistoryStatusFilter(
@@ -2912,30 +3198,30 @@ export default function RotasPage() {
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">
+            <div className="min-w-0">
+              <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                 Loja
               </label>
               <select
-                className="rounded-md bg-neutral-900 border border-neutral-700 px-3 py-2 text-xs text-gray-100"
+                className="app-select text-xs"
                 value={historyStoreFilter}
                 onChange={(e) => setHistoryStoreFilter(e.target.value)}
               >
                 <option value="todas">Todas</option>
                 {storeOptions.map((store) => (
-                  <option key={store} value={store}>
-                    {store}
+                  <option key={store.key} value={store.key}>
+                    {store.label}
                   </option>
                 ))}
               </select>
             </div>
 
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">
+            <div className="min-w-0">
+              <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                 Motorista
               </label>
               <select
-                className="rounded-md bg-neutral-900 border border-neutral-700 px-3 py-2 text-xs text-gray-100"
+                className="app-select text-xs"
                 value={historyDriverFilter}
                 onChange={(e) => setHistoryDriverFilter(e.target.value)}
               >
@@ -2949,17 +3235,17 @@ export default function RotasPage() {
             </div>
 
             {/* Filtro Minhas rotas */}
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">
+            <div className="min-w-0 sm:col-span-2 lg:col-span-4 2xl:col-span-2">
+              <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                 Responsável
               </label>
               <button
                 type="button"
                 onClick={() => setShowOnlyMyRoutes((prev) => !prev)}
-                className={`rounded-md px-3 py-2 text-xs border ${
+                className={`min-h-11 w-full rounded-2xl border px-3 py-2.5 text-xs font-medium transition ${
                   showOnlyMyRoutes
-                    ? "bg-yellow-500 text-black border-yellow-400"
-                    : "bg-neutral-900 text-gray-100 border-neutral-700"
+                    ? "border-yellow-300 bg-yellow-400 text-black"
+                    : "border-border bg-white text-slate-700 hover:bg-blue-50 dark:bg-slate-950/60 dark:text-slate-100 dark:hover:bg-yellow-400/10"
                 }`}
               >
                 {showOnlyMyRoutes ? "Mostrando só minhas rotas" : "Ver todas as rotas"}
@@ -2969,25 +3255,25 @@ export default function RotasPage() {
         </div>
         )}
 
-        <div className="mt-2">
-          <h2 className="text-sm font-semibold text-gray-100 mb-2 flex items-center gap-2">
-            {showAllHistoryRoutes ? "Historico filtrado" : "Rotas registradas hoje"}
-            <span className="text-[11px] text-gray-500">
+        <div className="mt-2 min-w-0">
+          <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-950 dark:text-white">
+            {isHistoryPage ? "Historico filtrado" : "Ultimas rotas realizadas"}
+            <span className="text-[11px] text-slate-500 dark:text-slate-400">
               ({displayedHistoryRoutes.length} registro(s))
             </span>
           </h2>
 
         {loading ? (
-            <p className="text-sm text-gray-400">Carregando rotas...</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400">Carregando rotas...</p>
           ) : displayedHistoryRoutes.length === 0 ? (
-            <p className="text-sm text-gray-400">
-              {showAllHistoryRoutes
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              {isHistoryPage
                 ? "Nenhuma rota encontrada com os filtros atuais."
-                : "Nenhuma rota registrada hoje."}
+                : "Nenhuma rota recente registrada."}
             </p>
           ) : (
             <>
-            <div className="space-y-3 md:hidden">
+            <div className="space-y-3 xl:hidden">
               {displayedHistoryRoutes.map((r) => {
                 const distancia =
                   r.status === "cancelada"
@@ -3004,25 +3290,25 @@ export default function RotasPage() {
                 return (
                   <div
                     key={`${r.id}-mobile`}
-                    className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm shadow-slate-200/50 dark:border-white/10 dark:bg-[#050505]"
+                    className="min-w-0 rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm shadow-slate-200/50 dark:border-white/10 dark:bg-[#050505]"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-sm font-semibold text-slate-950 dark:text-white">
+                        <p className="break-words text-sm font-semibold text-slate-950 dark:text-white">
                           <span className="font-mono">{r.vehiclePlate}</span> · {r.vehicleModel}
                         </p>
-                        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                        <p className="mt-1 break-words text-xs text-slate-500 dark:text-slate-400">
                           {formatRouteDateTime(r.startAt)} · {r.driverName}
                         </p>
                       </div>
 
-                      <div>
+                      <div className="shrink-0">
                         {r.status === "finalizada" ? (
-                          <span className="rounded-full border border-green-500/40 bg-green-500/10 px-2.5 py-1 text-[11px] font-semibold text-green-600 dark:text-green-300">
+                          <span className="inline-flex min-w-max items-center justify-center whitespace-nowrap rounded-full border border-green-500/40 bg-green-500/10 px-2.5 py-1 text-[11px] font-semibold text-green-600 dark:text-green-300">
                             Finalizada
                           </span>
                         ) : (
-                          <span className="rounded-full border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-[11px] font-semibold text-red-600 dark:text-red-300">
+                          <span className="inline-flex min-w-max items-center justify-center whitespace-nowrap rounded-full border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-[11px] font-semibold text-red-600 dark:text-red-300">
                             Cancelada
                           </span>
                         )}
@@ -3030,23 +3316,23 @@ export default function RotasPage() {
                     </div>
 
                     <div className="mt-3 space-y-2 text-sm text-slate-600 dark:text-slate-300">
-                      <p>
+                      <p className="break-words">
                         <span className="font-medium text-slate-950 dark:text-white">Trajeto:</span>{" "}
                         {(r.origem || "-") + " -> " + (r.destino || "-")}
                       </p>
-                      <p>
+                      <p className="break-words">
                         <span className="font-medium text-slate-950 dark:text-white">KM:</span>{" "}
                         <span className="font-mono">
                           {r.startKm} km{r.endKm != null ? ` / ${r.endKm} km` : ""}
                         </span>
                       </p>
-                      <p>
+                      <p className="break-words">
                         <span className="font-medium text-slate-950 dark:text-white">Distancia:</span>{" "}
                         {distancia != null ? `${distancia.toFixed(1)} km` : "-"}
                       </p>
 
                       {r.cancelReason ? (
-                        <p className="text-red-600 dark:text-red-300">
+                        <p className="break-words text-red-600 dark:text-red-300">
                           Motivo: {r.cancelReason}
                         </p>
                       ) : null}
@@ -3059,28 +3345,14 @@ export default function RotasPage() {
                       ) : null}
 
                       {r.observacoes ? (
-                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                        <p className="break-words text-xs text-slate-500 dark:text-slate-400">
                           Obs: {r.observacoes}
                         </p>
                       ) : null}
                     </div>
 
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {isAdmin && r.status !== "cancelada" ? (
-                        <ActionIconButton action="edit" onClick={() => abrirEditarRota(r)} />
-                      ) : null}
-                      {!isAdmin && canEditObs ? (
-                        <Button
-                          size="sm"
-                          className="bg-yellow-400 text-black hover:bg-yellow-300 dark:bg-yellow-300 dark:text-black"
-                          onClick={() => abrirObsRoute(r)}
-                        >
-                          Obs
-                        </Button>
-                      ) : null}
-                      {isAdmin ? (
-                        <ActionIconButton action="delete" onClick={() => abrirExcluirRota(r)} />
-                      ) : null}
+                    <div className="mt-4 flex justify-end">
+                      {renderHistoryRouteActions(r, canEditObs)}
                     </div>
 
                     {isObsEditing ? (
@@ -3113,23 +3385,23 @@ export default function RotasPage() {
               })}
             </div>
 
-            <div className="hidden overflow-x-auto md:block">
-              <table className="w-full text-sm border-collapse">
+            <div className="app-table-wrap hidden max-w-full xl:block">
+              <table className="app-table w-full table-fixed">
                 <thead>
-                  <tr className="text-left border-b border-neutral-800 text-gray-400">
-                    <th className="py-2 pr-2">Data</th>
-                    <th className="py-2 px-2">Veículo</th>
-                    <th className="py-2 px-2 hidden md:table-cell">Motorista</th>
-                    <th className="py-2 px-2">Origem → Destino</th>
-                    <th className="py-2 px-2 hidden lg:table-cell">
+                  <tr className="border-b border-border text-left text-slate-500 dark:text-slate-400">
+                    <th className="w-[13%] lg:w-[11%] xl:w-[10%]">Data</th>
+                    <th className="w-[24%] lg:w-[19%] xl:w-[17%] 2xl:w-[15%]">Veículo</th>
+                    <th className="hidden w-[18%] lg:w-[15%] xl:w-[13%] 2xl:w-[12%] md:table-cell">Motorista</th>
+                    <th className="w-[26%] lg:w-[22%] xl:w-[20%] 2xl:w-[18%]">Origem → Destino</th>
+                    <th className="hidden lg:w-[13%] xl:w-[12%] 2xl:w-[11%] lg:table-cell">
                       KM (início / fim)
                     </th>
-                    <th className="py-2 px-2 hidden xl:table-cell">Distância</th>
-                    <th className="py-2 px-2 hidden xl:table-cell">
+                    <th className="hidden xl:w-[9%] 2xl:w-[8%] xl:table-cell">Distância</th>
+                    <th className="hidden 2xl:w-[13%] 2xl:table-cell">
                       Observações
                     </th>
-                    <th className="py-2 px-2">Status</th>
-                    <th className="py-2 pl-2 text-right">Ações</th>
+                    <th className="w-[12%] lg:w-[10%] xl:w-[8%]">Status</th>
+                    <th className="w-[7%] text-right lg:w-[6%] xl:w-[5%]">Ações</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -3155,8 +3427,8 @@ export default function RotasPage() {
 
                     return (
                       <Fragment key={r.id}>
-                        <tr className="border-b border-neutral-900 hover:bg-neutral-800/60">
-                          <td className="py-2 pr-2 text-gray-300">
+                        <tr className="border-b border-border text-slate-700 hover:bg-blue-50/50 dark:text-slate-200 dark:hover:bg-white/[0.04]">
+                          <td className="text-slate-500 dark:text-slate-400">
                             {r.startAt
                               ? new Date(r.startAt).toLocaleString("pt-BR", {
                                   day: "2-digit",
@@ -3166,11 +3438,13 @@ export default function RotasPage() {
                                 })
                               : "-"}
                           </td>
-                          <td className="py-2 px-2 text-gray-100">
-                            <span className="font-mono">{r.vehiclePlate}</span>{" "}
-                            · {r.vehicleModel}
+                          <td className="min-w-0">
+                            <div className="truncate font-medium text-slate-950 dark:text-white">
+                              <span className="font-mono">{r.vehiclePlate}</span>{" "}
+                              · {r.vehicleModel}
+                            </div>
                             {r.storeId && (
-                              <span className="ml-1 text-[11px] text-gray-500">
+                              <span className="text-[11px] text-slate-500 dark:text-slate-400">
                                 ({r.storeId})
                               </span>
                             )}
@@ -3185,80 +3459,68 @@ export default function RotasPage() {
                               </div>
                             )}
                           </td>
-                          <td className="py-2 px-2 text-gray-200 hidden md:table-cell">
-                            {r.driverName}
+                          <td className="hidden min-w-0 md:table-cell">
+                            <div className="truncate">{r.driverName}</div>
                           </td>
-                          <td className="py-2 px-2 text-gray-300">
-                            {(r.origem || "-") + " → " + (r.destino || "-")}
+                          <td className="min-w-0">
+                            <div className="truncate">
+                              {(r.origem || "-") + " → " + (r.destino || "-")}
+                            </div>
                             {r.status === "cancelada" && r.cancelReason && (
-                              <div className="text-[11px] text-red-300 flex items-center gap-1 mt-0.5">
-                                <Info className="w-3 h-3" />
-                                Motivo: {r.cancelReason}
+                              <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[11px] text-red-600 dark:text-red-300">
+                                <Info className="h-3 w-3 shrink-0" />
+                                <span className="truncate">Motivo: {r.cancelReason}</span>
                               </div>
                             )}
                           </td>
-                          <td className="py-2 px-2 text-gray-200 hidden lg:table-cell">
+                          <td className="hidden lg:table-cell">
                             <span className="font-mono">
                               {r.startKm} km
                               {r.endKm != null ? ` / ${r.endKm} km` : ""}
                             </span>
                           </td>
-                          <td className="py-2 px-2 text-gray-200 hidden xl:table-cell">
+                          <td className="hidden xl:table-cell">
                             {distancia != null
                               ? `${distancia.toFixed(1)} km`
                               : r.status === "cancelada"
                               ? "-"
                               : "-"}
                           </td>
-                          <td className="py-2 px-2 text-gray-300 hidden xl:table-cell">
-                            {obsResumo ? obsTexto : "-"}
+                          <td className="hidden min-w-0 2xl:table-cell">
+                            <div className="truncate">{obsResumo ? obsTexto : "-"}</div>
                           </td>
-                          <td className="py-2 px-2">
+                          <td className="whitespace-nowrap">
                             {r.status === "finalizada" && (
-                              <span className="px-2 py-1 rounded-full text-[11px] font-semibold bg-green-500/20 text-green-300 border border-green-500/40">
+                              <span className="inline-flex min-w-max items-center justify-center whitespace-nowrap rounded-full border border-green-500/40 bg-green-500/10 px-2 py-1 text-[11px] font-semibold text-green-700 dark:text-green-300">
                                 Finalizada
                               </span>
                             )}
                             {r.status === "cancelada" && (
-                              <span className="px-2 py-1 rounded-full text-[11px] font-semibold bg-red-500/20 text-red-300 border border-red-500/40">
+                              <span className="inline-flex min-w-max items-center justify-center whitespace-nowrap rounded-full border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] font-semibold text-red-700 dark:text-red-300">
                                 Cancelada
                               </span>
                             )}
                           </td>
-                          <td className="py-2 pl-2 text-right">
-                            <div className="flex flex-wrap justify-end gap-2">
-                              {isAdmin && r.status !== "cancelada" && (
-                                <ActionIconButton action="edit" onClick={() => abrirEditarRota(r)} />
-                              )}
-                              {!isAdmin && canEditObs && (
-                                <Button
-                                  size="sm"
-                                  className="bg-yellow-400 hover:bg-yellow-300 text-black text-xs h-7 px-3"
-                                  onClick={() => abrirObsRoute(r)}
-                                >
-                                  Obs
-                                </Button>
-                              )}
-                              {isAdmin && (
-                                <ActionIconButton action="delete" onClick={() => abrirExcluirRota(r)} />
-                              )}
+                          <td className="text-right">
+                            <div className="flex justify-end">
+                              {renderHistoryRouteActions(r, canEditObs)}
                             </div>
                           </td>
                         </tr>
 
                         {isObsEditing && (
-                          <tr className="border-b border-neutral-900">
-                            <td colSpan={9} className="bg-neutral-900 px-3 py-3">
+                          <tr className="border-b border-border">
+                            <td colSpan={9} className="bg-slate-50/80 px-3 py-3 dark:bg-white/[0.03]">
                               <form
                                 onSubmit={handleSalvarObs}
                                 className="space-y-2"
                               >
                                 <div className="flex items-center justify-between mb-1">
-                                  <span className="text-xs text-gray-300 flex items-center gap-1">
-                                    <Info className="w-3 h-3 text-yellow-300" />
+                                  <span className="flex items-center gap-1 text-xs text-slate-600 dark:text-slate-300">
+                                    <Info className="h-3 w-3 text-yellow-500 dark:text-yellow-300" />
                                     Observações da rota
                                     {isAdmin && !userIsOwner && !canEditObs && (
-                                      <span className="text-[10px] text-gray-400">
+                                      <span className="text-[10px] text-slate-500 dark:text-slate-400">
                                         (visualização somente)
                                       </span>
                                     )}
@@ -3275,7 +3537,7 @@ export default function RotasPage() {
                                       ? "Digite ou ajuste as observações da rota..."
                                       : "Observações registradas pelo responsável pela rota."
                                   }
-                                  className="w-full rounded-md bg-neutral-950 border border-neutral-700 px-3 py-2 text-sm text-gray-100 placeholder:text-gray-500 resize-y min-h-[80px]"
+                                  className="app-textarea min-h-[80px]"
                                 />
                                 <div className="flex flex-wrap gap-2 justify-end pt-1">
                                   {canEditObs && (
@@ -3291,7 +3553,8 @@ export default function RotasPage() {
                                   )}
                                   <Button
                                     type="button"
-                                    className="bg-neutral-800 hover:bg-neutral-700 text-gray-100 text-xs"
+                                    variant="outline"
+                                    className="text-xs"
                                     onClick={fecharObsRoute}
                                   >
                                     Fechar

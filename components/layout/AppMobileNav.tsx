@@ -2,50 +2,65 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Car, Fuel, LayoutDashboard, Map, Wrench } from "lucide-react";
+import { BarChart3, Fuel, Map, Wrench } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
 const mobileItems = [
-  { href: "/dashboard", label: "Painel", icon: LayoutDashboard },
   { href: "/rotas", label: "Rotas", icon: Map },
-  { href: "/veiculos", label: "Veiculos", icon: Car },
-  { href: "/abastecimentos", label: "Custos", icon: Fuel },
-  { href: "/manutencoes", label: "Oficina", icon: Wrench },
+  { href: "/abastecimentos", label: "Abastec.", icon: Fuel },
+  { href: "/manutencoes", label: "Manut.", icon: Wrench },
+  { href: "/gerenciamento", label: "Gerencial", icon: BarChart3 },
 ];
 
 export function AppMobileNav() {
   const pathname = usePathname();
 
   return (
-    <nav className="app-mobile-safe fixed inset-x-3 bottom-3 z-40 lg:hidden">
-      <div className="app-panel mx-auto max-w-xl px-2 py-2">
-        <div className="grid grid-cols-5 gap-1">
+    <nav className="app-mobile-safe fixed inset-x-2 bottom-1.5 z-40 lg:hidden">
+      <div className="app-panel-muted mx-auto max-w-[430px] rounded-[22px] px-1.5 py-1.5 shadow-[0_16px_34px_rgba(15,23,42,0.14)]">
+        <div
+          className={cn(
+            "grid gap-1",
+            mobileItems.length === 5 ? "grid-cols-5" : "grid-cols-4"
+          )}
+        >
           {mobileItems.map(({ href, label, icon: Icon }) => {
-            const active = pathname === href || pathname.startsWith(`${href}/`);
+            const active =
+              href === "/rotas"
+                ? pathname === href || pathname.startsWith("/rotas/")
+                : href === "/gerenciamento"
+                ? pathname.startsWith("/gerenciamento") ||
+                  pathname.startsWith("/cadastros") ||
+                  pathname.startsWith("/veiculos") ||
+                  pathname.startsWith("/motoristas") ||
+                  pathname.startsWith("/relatorios") ||
+                  pathname.startsWith("/admin")
+                : pathname === href || pathname.startsWith(`${href}/`);
 
             return (
               <Link
                 key={href}
                 href={href}
+                aria-label={label}
                 className={cn(
-                  "flex min-w-0 flex-col items-center gap-1 rounded-2xl px-2 py-2 text-center transition",
+                  "flex min-w-0 flex-col items-center gap-0.5 rounded-[15px] px-1 py-1.5 text-center transition",
                   active
-                    ? "bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-200"
+                    ? "bg-slate-950 text-white shadow-[0_8px_18px_rgba(15,23,42,0.14)] dark:bg-white dark:text-slate-950"
                     : "text-slate-500 hover:bg-slate-50 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/5 dark:hover:text-white"
                 )}
               >
                 <div
                   className={cn(
-                    "flex h-9 w-9 items-center justify-center rounded-2xl border transition",
+                    "flex h-7 w-7 items-center justify-center rounded-[12px] border transition",
                     active
-                      ? "border-blue-100 bg-white text-blue-700 dark:border-blue-400/20 dark:bg-slate-950/50 dark:text-blue-200"
+                      ? "border-white/15 bg-white/12 text-white dark:border-slate-200 dark:bg-slate-100 dark:text-slate-950"
                       : "border-border bg-white text-slate-500 dark:bg-slate-950/40 dark:text-slate-400"
                   )}
                 >
-                  <Icon className="h-4 w-4" />
+                  <Icon className="h-3.5 w-3.5" />
                 </div>
-                <span className="truncate text-[10px] font-medium">{label}</span>
+                <span className="truncate text-[9px] font-semibold leading-tight">{label}</span>
               </Link>
             );
           })}

@@ -8,9 +8,7 @@ import {
   deleteDoc,
   doc,
   getDocs,
-  query,
   updateDoc,
-  where,
 } from "firebase/firestore";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter } from "next/navigation";
@@ -29,6 +27,12 @@ import { MetricCard } from "@/components/layout/MetricCard";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { StatusBanner } from "@/components/layout/StatusBanner";
 import { ActionIconButton } from "@/components/ui/action-icon-button";
+import { getVehicleDocsForUser } from "@/lib/firestore-access";
+import {
+  getCanonicalStoreOptions,
+  normalizeStoreKey,
+  storesMatch,
+} from "@/lib/store-utils";
 import {
   Building2,
   Filter,
@@ -44,6 +48,7 @@ import {
 
 type VehicleStatus = "disponivel" | "em_rota" | "manutencao";
 type StatusFilter = VehicleStatus | "todos";
+type ResponsibleFilter = "todos" | string;
 
 interface VehicleResponsibleUser {
   id: string;
@@ -70,12 +75,39 @@ interface SimpleUser {
   storeId: string;
 }
 
+interface UserDocData {
+  name?: string;
+  storeId?: string;
+  active?: boolean;
+}
+
+interface VehicleDocData {
+  plate?: string;
+  model?: string;
+  storeId?: string;
+  responsibleUserId?: string;
+  responsibleUserName?: string;
+  responsibleUserIds?: string[];
+  responsibleUsers?: Array<{
+    id?: string;
+    name?: string;
+    storeId?: string;
+  }>;
+  status?: VehicleStatus;
+  currentKm?: number | null;
+  active?: boolean;
+}
+
 function sortVehicles(list: Vehicle[]) {
   return [...list].sort((a, b) => {
     const storeCompare = (a.storeId || "").localeCompare(b.storeId || "");
     if (storeCompare !== 0) return storeCompare;
     return (a.plate || "").localeCompare(b.plate || "");
   });
+}
+
+function normalizeText(value: string) {
+  return value.trim().toLocaleLowerCase("pt-BR");
 }
 
 function formatKm(value?: number) {
@@ -98,6 +130,54 @@ function getStatusLabel(status: VehicleStatus) {
   if (status === "disponivel") return "Disponivel";
   if (status === "em_rota") return "Em rota";
   return "Manutencao";
+}
+
+function getVehicleStatus(value?: string): VehicleStatus {
+  if (value === "em_rota" || value === "manutencao") {
+    return value;
+  }
+
+  return "disponivel";
+}
+
+function extractResponsibleUsers(data: VehicleDocData) {
+  const responsibleUsersFromDoc =
+    Array.isArray(data.responsibleUsers) && data.responsibleUsers.length
+      ? data.responsibleUsers.reduce<VehicleResponsibleUser[]>(
+          (accumulator, responsible) => {
+            if (!responsible?.id || !responsible?.name) {
+              return accumulator;
+            }
+
+            accumulator.push({
+              id: responsible.id,
+              name: responsible.name,
+              storeId: responsible.storeId,
+            });
+
+            return accumulator;
+          },
+          []
+        )
+      : data.responsibleUserId && data.responsibleUserName
+        ? [
+            {
+              id: data.responsibleUserId,
+              name: data.responsibleUserName,
+              storeId: data.storeId,
+            },
+          ]
+        : [];
+
+  const responsibleUserIdsFromDoc =
+    Array.isArray(data.responsibleUserIds) && data.responsibleUserIds.length
+      ? data.responsibleUserIds.filter(Boolean)
+      : responsibleUsersFromDoc.map((responsibleUser) => responsibleUser.id);
+
+  return {
+    responsibleUsersFromDoc,
+    responsibleUserIdsFromDoc,
+  };
 }
 
 export default function VeiculosPage() {
@@ -124,6 +204,8 @@ export default function VeiculosPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("todos");
   const [storeFilter, setStoreFilter] = useState("todas");
+  const [responsibleFilter, setResponsibleFilter] =
+    useState<ResponsibleFilter>("todos");
 
   const isAdmin = user?.role === "admin";
 
@@ -143,63 +225,50 @@ export default function VeiculosPage() {
 
         if (user.role === "admin") {
           const usersSnap = await getDocs(collection(db, "users"));
-          const nextUsers: SimpleUser[] = usersSnap.docs.map((snapshot) => {
-            const data = snapshot.data() as any;
+          const nextUsers: SimpleUser[] = usersSnap.docs.reduce<SimpleUser[]>(
+            (accumulator, snapshot) => {
+              const data = snapshot.data() as UserDocData;
+              const name = typeof data.name === "string" ? data.name : "";
+              const storeId = typeof data.storeId === "string" ? data.storeId : "";
 
-            return {
-              id: snapshot.id,
-              name: data.name,
-              storeId: data.storeId,
-            };
-          });
+              if (data.active === false || !name || !storeId) {
+                return accumulator;
+              }
+
+              accumulator.push({
+                id: snapshot.id,
+                name,
+                storeId,
+              });
+
+              return accumulator;
+            },
+            []
+          );
 
           setUsers(nextUsers);
         } else {
           setUsers([]);
         }
 
-        const vehiclesSnap =
-          user.role === "admin"
-            ? await getDocs(collection(db, "vehicles"))
-            : await getDocs(
-                query(
-                  collection(db, "vehicles"),
-                  where("responsibleUserIds", "array-contains", user.id ?? "")
-                )
-              );
-
-        const nextVehicles = vehiclesSnap.docs.map((snapshot) => {
-          const data = snapshot.data() as any;
-
-          const responsibleUsersFromDoc: VehicleResponsibleUser[] =
-            Array.isArray(data.responsibleUsers) && data.responsibleUsers.length
-              ? data.responsibleUsers
-              : data.responsibleUserId && data.responsibleUserName
-              ? [
-                  {
-                    id: data.responsibleUserId,
-                    name: data.responsibleUserName,
-                    storeId: data.storeId,
-                  },
-                ]
-              : [];
-
-          const responsibleUserIdsFromDoc: string[] =
-            Array.isArray(data.responsibleUserIds) && data.responsibleUserIds.length
-              ? data.responsibleUserIds
-              : responsibleUsersFromDoc.map((responsible) => responsible.id);
+        const vehicleDocs = await getVehicleDocsForUser(db, user);
+        const nextVehicles = vehicleDocs.map((snapshot) => {
+          const data = snapshot.data() as VehicleDocData;
+          const { responsibleUsersFromDoc, responsibleUserIdsFromDoc } =
+            extractResponsibleUsers(data);
 
           return {
             id: snapshot.id,
-            plate: data.plate,
-            model: data.model,
-            storeId: data.storeId,
+            plate: typeof data.plate === "string" ? data.plate : "",
+            model: typeof data.model === "string" ? data.model : "",
+            storeId: typeof data.storeId === "string" ? data.storeId : "",
             responsibleUserName:
               data.responsibleUserName || responsibleUsersFromDoc[0]?.name || "",
             responsibleUserIds: responsibleUserIdsFromDoc,
             responsibleUsers: responsibleUsersFromDoc,
-            status: data.status ?? "disponivel",
-            currentKm: data.currentKm,
+            status: getVehicleStatus(data.status),
+            currentKm:
+              typeof data.currentKm === "number" ? data.currentKm : undefined,
             active: data.active ?? true,
           } satisfies Vehicle;
         });
@@ -280,6 +349,11 @@ export default function VeiculosPage() {
       next[index] = value;
       return next;
     });
+
+    const selectedUser = users.find((userOption) => userOption.id === value);
+    if (selectedUser?.storeId) {
+      setStoreId((previous) => (previous.trim() ? previous : selectedUser.storeId));
+    }
   }
 
   function removeResponsibleField(index: number) {
@@ -294,6 +368,13 @@ export default function VeiculosPage() {
     return uniqueIds
       .map((id) => users.find((userOption) => userOption.id === id) || null)
       .filter((userOption): userOption is SimpleUser => userOption !== null);
+  }
+
+  function clearFilters() {
+    setSearchTerm("");
+    setStatusFilter("todos");
+    setStoreFilter("todas");
+    setResponsibleFilter("todos");
   }
 
   function parseCurrentKmInput(value: string) {
@@ -336,6 +417,11 @@ export default function VeiculosPage() {
         return;
       }
 
+      if (selectedUsers.some((item) => !item.storeId)) {
+        setErrorMsg("Todos os responsaveis precisam ter uma loja vinculada.");
+        return;
+      }
+
       const parsedKm = parseCurrentKmInput(currentKm);
       if (parsedKm.hasValue && parsedKm.value == null) {
         setErrorMsg("Informe um KM valido.");
@@ -344,6 +430,20 @@ export default function VeiculosPage() {
 
       if ((parsedKm.value ?? 0) < 0) {
         setErrorMsg("O KM nao pode ser negativo.");
+        return;
+      }
+
+      const resolvedStoreId = storeId.trim() || selectedUsers[0]?.storeId || "";
+
+      if (!resolvedStoreId) {
+        setErrorMsg("Defina a loja do veiculo ou selecione um responsavel com loja.");
+        return;
+      }
+
+      if (selectedUsers.some((item) => !storesMatch(item.storeId, resolvedStoreId))) {
+        setErrorMsg(
+          "Todos os responsaveis precisam pertencer a mesma loja informada para o veiculo."
+        );
         return;
       }
 
@@ -359,7 +459,7 @@ export default function VeiculosPage() {
       const docRef = await addDoc(collection(db, "vehicles"), {
         plate: normalizedPlate,
         model: model.trim(),
-        storeId: storeId.trim(),
+        storeId: resolvedStoreId,
         responsibleUserIds,
         responsibleUsers: responsibleUsersForDoc,
         responsibleUserId: primaryResponsible.id,
@@ -373,7 +473,7 @@ export default function VeiculosPage() {
         id: docRef.id,
         plate: normalizedPlate,
         model: model.trim(),
-        storeId: storeId.trim(),
+        storeId: resolvedStoreId,
         responsibleUserIds,
         responsibleUsers: responsibleUsersForDoc,
         responsibleUserName: primaryResponsible.name,
@@ -425,6 +525,11 @@ export default function VeiculosPage() {
         return;
       }
 
+      if (selectedUsers.some((item) => !item.storeId)) {
+        setErrorMsg("Todos os responsaveis precisam ter uma loja vinculada.");
+        return;
+      }
+
       const parsedKm = parseCurrentKmInput(currentKm);
       if (parsedKm.hasValue && parsedKm.value == null) {
         setErrorMsg("Informe um KM valido.");
@@ -447,6 +552,20 @@ export default function VeiculosPage() {
         return;
       }
 
+      const resolvedStoreId = storeId.trim() || selectedUsers[0]?.storeId || "";
+
+      if (!resolvedStoreId) {
+        setErrorMsg("Defina a loja do veiculo ou selecione um responsavel com loja.");
+        return;
+      }
+
+      if (selectedUsers.some((item) => !storesMatch(item.storeId, resolvedStoreId))) {
+        setErrorMsg(
+          "Todos os responsaveis precisam pertencer a mesma loja informada para o veiculo."
+        );
+        return;
+      }
+
       const responsibleUserIds = selectedUsers.map((item) => item.id);
       const responsibleUsersForDoc = selectedUsers.map((item) => ({
         id: item.id,
@@ -459,7 +578,7 @@ export default function VeiculosPage() {
       await updateDoc(doc(db, "vehicles", editingVehicle.id), {
         plate: normalizedPlate,
         model: model.trim(),
-        storeId: storeId.trim(),
+        storeId: resolvedStoreId,
         responsibleUserIds,
         responsibleUsers: responsibleUsersForDoc,
         responsibleUserId: primaryResponsible.id,
@@ -475,7 +594,7 @@ export default function VeiculosPage() {
                   ...vehicle,
                   plate: normalizedPlate,
                   model: model.trim(),
-                  storeId: storeId.trim(),
+                  storeId: resolvedStoreId,
                   responsibleUserIds,
                   responsibleUsers: responsibleUsersForDoc,
                   responsibleUserName: primaryResponsible.name,
@@ -526,14 +645,45 @@ export default function VeiculosPage() {
   }
 
   const storeOptions = useMemo(() => {
-    const stores = new Set<string>();
-    vehicles.forEach((vehicle) => {
-      if (vehicle.storeId) {
-        stores.add(vehicle.storeId);
-      }
-    });
-    return Array.from(stores).sort();
+    return getCanonicalStoreOptions(vehicles.map((vehicle) => vehicle.storeId));
   }, [vehicles]);
+
+  const responsibleOptions = useMemo(() => {
+    const responsibles = new Map<string, VehicleResponsibleUser>();
+
+    vehicles.forEach((vehicle) => {
+      vehicle.responsibleUsers.forEach((responsible) => {
+        responsibles.set(responsible.id, responsible);
+      });
+    });
+
+    users.forEach((userOption) => {
+      responsibles.set(userOption.id, {
+        id: userOption.id,
+        name: userOption.name,
+        storeId: userOption.storeId,
+      });
+    });
+
+    return Array.from(responsibles.values()).sort((a, b) =>
+      a.name.localeCompare(b.name, "pt-BR")
+    );
+  }, [users, vehicles]);
+
+  const selectedResponsiblePreview = useMemo(() => {
+    const seen = new Set<string>();
+
+    return responsibleIds
+      .map((id) => users.find((userOption) => userOption.id === id) || null)
+      .filter((userOption): userOption is SimpleUser => {
+        if (!userOption || seen.has(userOption.id)) {
+          return false;
+        }
+
+        seen.add(userOption.id);
+        return true;
+      });
+  }, [responsibleIds, users]);
 
   const filteredVehicles = useMemo(() => {
     let nextList = [...vehicles];
@@ -543,29 +693,36 @@ export default function VeiculosPage() {
     }
 
     if (storeFilter !== "todas") {
-      nextList = nextList.filter((vehicle) => vehicle.storeId === storeFilter);
+      nextList = nextList.filter(
+        (vehicle) => normalizeStoreKey(vehicle.storeId) === storeFilter
+      );
+    }
+
+    if (responsibleFilter !== "todos") {
+      nextList = nextList.filter((vehicle) =>
+        vehicle.responsibleUserIds.includes(responsibleFilter)
+      );
     }
 
     if (searchTerm.trim()) {
-      const term = searchTerm.trim().toLowerCase();
+      const term = normalizeText(searchTerm);
       nextList = nextList.filter((vehicle) => {
-        const responsibleNames = vehicle.responsibleUsers
-          .map((responsible) => responsible.name)
-          .join(" ")
-          .toLowerCase();
+        const responsibleNames = normalizeText(
+          vehicle.responsibleUsers.map((responsible) => responsible.name).join(" ")
+        );
 
         return (
-          vehicle.plate.toLowerCase().includes(term) ||
-          vehicle.model.toLowerCase().includes(term) ||
-          vehicle.storeId.toLowerCase().includes(term) ||
-          vehicle.responsibleUserName.toLowerCase().includes(term) ||
+          normalizeText(vehicle.plate).includes(term) ||
+          normalizeText(vehicle.model).includes(term) ||
+          normalizeText(vehicle.storeId).includes(term) ||
+          normalizeText(vehicle.responsibleUserName).includes(term) ||
           responsibleNames.includes(term)
         );
       });
     }
 
     return nextList;
-  }, [searchTerm, statusFilter, storeFilter, vehicles]);
+  }, [responsibleFilter, searchTerm, statusFilter, storeFilter, vehicles]);
 
   const totalVeiculos = vehicles.length;
   const disponiveis = vehicles.filter(
@@ -579,8 +736,18 @@ export default function VeiculosPage() {
   const veiculosComKm = vehicles.filter(
     (vehicle) => vehicle.currentKm != null
   ).length;
+  const veiculosComMultiplosResponsaveis = vehicles.filter(
+    (vehicle) => vehicle.responsibleUsers.length > 1
+  ).length;
   const hasActiveFilters =
-    searchTerm.trim() || statusFilter !== "todos" || storeFilter !== "todas";
+    searchTerm.trim() ||
+    statusFilter !== "todos" ||
+    storeFilter !== "todas" ||
+    responsibleFilter !== "todos";
+  const currentScopeLabel =
+    filteredVehicles.length === totalVeiculos
+      ? `${totalVeiculos} veiculo(s) visiveis nesta lista`
+      : `${filteredVehicles.length} de ${totalVeiculos} veiculo(s) correspondem aos filtros`;
 
   const statusChipClasses = (target: StatusFilter) =>
     `rounded-full border px-3 py-2 text-xs font-medium transition ${
@@ -594,7 +761,7 @@ export default function VeiculosPage() {
       <PageHeader
         eyebrow="Gestao da frota"
         title="Veiculos do Grupo MM"
-        description="Organize placa, loja, responsaveis e status da frota em uma tela mais clara para escritorio e operacao em campo."
+        description="Placas, lojas, responsaveis e status em uma leitura mais direta."
         icon={Truck}
         badges={
           <>
@@ -614,7 +781,7 @@ export default function VeiculosPage() {
         }
         actions={
           isAdmin ? (
-            <Button onClick={openNewVehicleDialog}>+ Novo veiculo</Button>
+            <Button onClick={openNewVehicleDialog}>Novo veiculo</Button>
           ) : null
         }
       />
@@ -624,12 +791,14 @@ export default function VeiculosPage() {
         <StatusBanner tone="success">{successMsg}</StatusBanner>
       ) : null}
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
         <MetricCard
           label="Total"
           value={String(totalVeiculos)}
-          helper="Veiculos registrados no sistema."
+          helper="Veiculos registrados."
           icon={Truck}
+          size="hero"
+          className="min-h-[176px]"
         />
         <MetricCard
           label="Disponiveis"
@@ -637,65 +806,46 @@ export default function VeiculosPage() {
           helper="Prontos para nova saida."
           icon={Truck}
           accent="green"
+          size="hero"
+          className="min-h-[176px]"
         />
         <MetricCard
           label="Em rota"
           value={String(emRota)}
-          helper="Veiculos atualmente em operacao."
+          helper="Atualmente em operacao."
           icon={RouteIcon}
           accent="blue"
+          className="min-h-[168px]"
         />
         <MetricCard
           label="Manutencao"
           value={String(emManutencao)}
-          helper="Veiculos temporariamente indisponiveis."
+          helper="Temporariamente indisponiveis."
           icon={Wrench}
           accent="yellow"
+          className="min-h-[168px]"
         />
       </div>
 
-      <Card className="app-panel-muted p-4 md:p-5">
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <p className="text-sm font-semibold text-slate-900 dark:text-white">
-                Filtros da frota
-              </p>
-              <p className="text-sm text-slate-500 dark:text-slate-400">
-                Busque por placa, modelo, loja ou responsavel e combine com
-                status para chegar mais rapido ao veiculo certo.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-500 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
-                {filteredVehicles.length} veiculo(s) visiveis
-              </span>
-              <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-500 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
-                {lojasAtivas} loja(s)
-              </span>
-              <span className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-500 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
-                {veiculosComKm} com KM informado
-              </span>
-              {hasActiveFilters ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-9"
-                  onClick={() => {
-                    setSearchTerm("");
-                    setStatusFilter("todos");
-                    setStoreFilter("todas");
-                  }}
-                >
-                  Limpar filtros
-                </Button>
-              ) : null}
-            </div>
+      <Card className="app-toolbar-shell gap-4">
+        <div className="app-toolbar-head">
+          <div className="space-y-1.5">
+            <p className="app-kicker">Busca e filtros</p>
+            <h2 className="app-toolbar-title">Encontre a frota certa com rapidez</h2>
+            <p className="app-toolbar-copy">
+              Placa, modelo, loja, responsavel e status.
+            </p>
           </div>
 
-          <div className="grid gap-3 lg:grid-cols-[minmax(0,1.35fr)_240px]">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="app-chip">{currentScopeLabel}</span>
+            <span className="app-chip">{lojasAtivas} loja(s)</span>
+            <span className="app-chip">{veiculosComKm} com KM</span>
+            <span className="app-chip">{veiculosComMultiplosResponsaveis} com cobertura</span>
+          </div>
+        </div>
+
+        <div className="grid gap-3 2xl:grid-cols-[minmax(0,1.35fr)_220px_280px]">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
               <Input
@@ -715,15 +865,34 @@ export default function VeiculosPage() {
               >
                 <option value="todas">Todas as lojas</option>
                 {storeOptions.map((store) => (
-                  <option key={store} value={store}>
-                    {store}
+                  <option key={store.key} value={store.key}>
+                    {store.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="relative">
+              <UserCircle2 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <select
+                className="app-select h-11 w-full pl-10"
+                value={responsibleFilter}
+                onChange={(event) =>
+                  setResponsibleFilter(event.target.value as ResponsibleFilter)
+                }
+              >
+                <option value="todos">Todos os responsaveis</option>
+                {responsibleOptions.map((responsible) => (
+                  <option key={responsible.id} value={responsible.id}>
+                    {responsible.name}
+                    {responsible.storeId ? ` (${responsible.storeId})` : ""}
                   </option>
                 ))}
               </select>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
             <div className="mr-1 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
               <Filter className="h-4 w-4" />
               Status
@@ -757,22 +926,28 @@ export default function VeiculosPage() {
             >
               Manutencao
             </button>
+
+            {hasActiveFilters ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="ml-auto h-9"
+                onClick={clearFilters}
+              >
+                Limpar filtros
+              </Button>
+            ) : null}
           </div>
-        </div>
       </Card>
 
       <Card className="app-panel p-4 md:p-5">
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <RouteIcon className="h-4 w-4 text-yellow-400" />
-              <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
-                Frota cadastrada
-              </h2>
-            </div>
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              Consulte detalhes, responsaveis e situacao atual de cada veiculo.
-            </p>
+          <div className="space-y-1">
+            <p className="app-kicker">Base da frota</p>
+            <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
+              Veiculos cadastrados
+            </h2>
           </div>
 
           {!loading ? (
@@ -786,8 +961,8 @@ export default function VeiculosPage() {
           <div className="rounded-3xl border border-slate-200 bg-white px-5 py-10 text-center text-sm text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400">
             Carregando veiculos...
           </div>
-        ) : filteredVehicles.length === 0 ? (
-          <div className="rounded-3xl border border-dashed border-slate-300 bg-white px-5 py-10 text-center dark:border-white/10 dark:bg-white/[0.03]">
+          ) : filteredVehicles.length === 0 ? (
+          <div className="app-empty-state">
             <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
               Nenhum veiculo encontrado com os filtros atuais.
             </p>
@@ -797,15 +972,11 @@ export default function VeiculosPage() {
                 variant="outline"
                 size="sm"
                 className="mt-4"
-                onClick={() => {
-                  setSearchTerm("");
-                  setStatusFilter("todos");
-                  setStoreFilter("todas");
-                }}
-              >
-                Limpar filtros
-              </Button>
-            ) : null}
+                 onClick={clearFilters}
+               >
+                 Limpar filtros
+               </Button>
+             ) : null}
           </div>
         ) : (
           <>
@@ -813,7 +984,7 @@ export default function VeiculosPage() {
               {filteredVehicles.map((vehicle) => (
                 <div
                   key={vehicle.id}
-                  className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/[0.04]"
+                  className="app-list-card"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -884,17 +1055,17 @@ export default function VeiculosPage() {
               ))}
             </div>
 
-            <div className="hidden overflow-x-auto md:block">
-              <table className="min-w-[920px] w-full border-collapse text-sm">
+            <div className="app-table-wrap hidden md:block">
+              <table className="app-table min-w-[920px]">
                 <thead>
-                  <tr className="border-b border-slate-200 text-left text-slate-500 dark:border-white/10 dark:text-slate-400">
-                    <th className="py-3 pr-3 font-medium">Placa</th>
-                    <th className="px-3 py-3 font-medium">Modelo</th>
-                    <th className="px-3 py-3 font-medium">Loja</th>
-                    <th className="px-3 py-3 font-medium">Responsaveis</th>
-                    <th className="px-3 py-3 font-medium">Status</th>
-                    <th className="px-3 py-3 font-medium">KM atual</th>
-                    <th className="py-3 pl-3 text-right font-medium">Acoes</th>
+                  <tr>
+                    <th>Placa</th>
+                    <th>Modelo</th>
+                    <th>Loja</th>
+                    <th>Responsaveis</th>
+                    <th>Status</th>
+                    <th>KM atual</th>
+                    <th className="text-right">Acoes</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1124,6 +1295,26 @@ export default function VeiculosPage() {
                     </Button>
                   </div>
                 </div>
+
+                {selectedResponsiblePreview.length ? (
+                  <div className="rounded-[24px] border border-slate-200 bg-slate-50/90 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+                    <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                      Cobertura operacional
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {selectedResponsiblePreview.map((responsible) => (
+                        <span key={responsible.id} className="app-chip">
+                          {responsible.name}
+                          {responsible.storeId ? ` · ${responsible.storeId}` : ""}
+                        </span>
+                      ))}
+                    </div>
+                    <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
+                      Todos os responsaveis escolhidos precisam pertencer a mesma
+                      loja do veiculo para manter a frota organizada por unidade.
+                    </p>
+                  </div>
+                ) : null}
 
                 {editingVehicle ? (
                   <div className="rounded-[24px] border border-slate-200 bg-slate-50/90 p-4 dark:border-white/10 dark:bg-white/[0.03]">

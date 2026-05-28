@@ -60,6 +60,10 @@ import {
   type ReportRouteRecord,
   type ReportVehicleRecord,
 } from "@/lib/reporting";
+import {
+  getRecordDocsForUserByVehicles,
+  getVehicleDocsForUser,
+} from "@/lib/firestore-access";
 
 interface MonthlySummary {
   id: string;
@@ -103,13 +107,43 @@ const percentFormatter = new Intl.NumberFormat("pt-BR", {
   maximumFractionDigits: 1,
 });
 
+const chartColors = {
+  fuel: "#f59e0b",
+  maintenance: "#38bdf8",
+  km: "#10b981",
+  driver: "#22c55e",
+  violet: "#8b5cf6",
+  grid: "rgba(148, 163, 184, 0.16)",
+  cursor: "rgba(37, 99, 235, 0.06)",
+};
+
+const chartTick = {
+  fill: "#64748b",
+  fontSize: 11,
+  fontWeight: 600,
+};
+
+const chartLegendStyle = {
+  color: "#64748b",
+  fontSize: 12,
+  fontWeight: 600,
+};
+
+const chartMargin = {
+  top: 12,
+  right: 12,
+  bottom: 6,
+  left: 0,
+};
+
 const chartTooltipStyle = {
-  backgroundColor: "#07111f",
-  border: "1px solid rgba(245, 158, 11, 0.35)",
-  borderRadius: 16,
+  backgroundColor: "rgba(15, 23, 42, 0.96)",
+  border: "1px solid rgba(148, 163, 184, 0.22)",
+  borderRadius: 18,
   color: "#e5e7eb",
   fontSize: 12,
-  boxShadow: "0 20px 40px rgba(2, 6, 23, 0.45)",
+  boxShadow: "0 24px 54px rgba(2, 6, 23, 0.36)",
+  padding: "10px 12px",
 };
 
 function formatCurrency(value: number) {
@@ -222,7 +256,7 @@ function InsightCard({
   value: string;
 }) {
   return (
-    <div className="rounded-2xl border border-border bg-white/90 p-4 dark:border-white/10 dark:bg-slate-950/70">
+    <div className="app-inline-stat min-w-0 p-4">
       <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500">
         {title}
       </p>
@@ -236,6 +270,23 @@ function EmptyPanel({ text }: { text: string }) {
   return (
     <div className="flex min-h-48 items-center justify-center rounded-2xl border border-dashed border-border bg-white/70 px-6 text-center text-sm text-slate-500 dark:border-white/10 dark:bg-slate-950/40 dark:text-slate-400">
       {text}
+    </div>
+  );
+}
+
+function ChartFrame({
+  children,
+  className = "h-72",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`relative overflow-hidden rounded-[24px] bg-[linear-gradient(180deg,rgba(248,250,252,0.78),rgba(255,255,255,0.34))] p-2 dark:bg-[linear-gradient(180deg,rgba(255,255,255,0.045),rgba(255,255,255,0.016))] ${className}`}
+    >
+      <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-blue-400/35 to-transparent dark:via-yellow-300/30" />
+      <div className="relative h-full min-w-0">{children}</div>
     </div>
   );
 }
@@ -292,8 +343,8 @@ export default function RelatoriosPage() {
         setLoading(true);
         setErrorMsg("");
 
-        const vehiclesSnap = await getDocs(collection(db, "vehicles"));
-        const allVehicles: ReportVehicleRecord[] = vehiclesSnap.docs.map((docItem) => {
+        const vehicleDocs = await getVehicleDocsForUser(db, user);
+        const allVehicles: ReportVehicleRecord[] = vehicleDocs.map((docItem) => {
           const data = docItem.data();
 
           return {
@@ -330,8 +381,15 @@ export default function RelatoriosPage() {
         const vehicleById = new Map<string, ReportVehicleRecord>();
         allVehicles.forEach((vehicle) => vehicleById.set(vehicle.id, vehicle));
 
-        const routesSnap = await getDocs(collection(db, "routes"));
-        const allRoutes: ReportRouteRecord[] = routesSnap.docs.map((docItem) => {
+        const routeDocs = isAdmin
+          ? (await getDocs(collection(db, "routes"))).docs
+          : await getRecordDocsForUserByVehicles(
+              db,
+              "routes",
+              user,
+              visibleVehicles.map((vehicle) => vehicle.id)
+            );
+        const allRoutes: ReportRouteRecord[] = routeDocs.map((docItem) => {
           const data = docItem.data();
 
           return {
@@ -366,8 +424,15 @@ export default function RelatoriosPage() {
               return vehicle ? userCanUseVehicle(vehicle) : false;
             });
 
-        const refuelsSnap = await getDocs(collection(db, "fuelings"));
-        const allRefuels: ReportRefuelRecord[] = refuelsSnap.docs.map((docItem) => {
+        const refuelDocs = isAdmin
+          ? (await getDocs(collection(db, "fuelings"))).docs
+          : await getRecordDocsForUserByVehicles(
+              db,
+              "fuelings",
+              user,
+              visibleVehicles.map((vehicle) => vehicle.id)
+            );
+        const allRefuels: ReportRefuelRecord[] = refuelDocs.map((docItem) => {
           const data = docItem.data();
 
           return {
@@ -401,8 +466,15 @@ export default function RelatoriosPage() {
               return vehicle ? userCanUseVehicle(vehicle) : false;
             });
 
-        const maintenancesSnap = await getDocs(collection(db, "maintenances"));
-        const allMaintenances: ReportMaintenanceRecord[] = maintenancesSnap.docs.map(
+        const maintenanceDocs = isAdmin
+          ? (await getDocs(collection(db, "maintenances"))).docs
+          : await getRecordDocsForUserByVehicles(
+              db,
+              "maintenances",
+              user,
+              visibleVehicles.map((vehicle) => vehicle.id)
+            );
+        const allMaintenances: ReportMaintenanceRecord[] = maintenanceDocs.map(
           (docItem) => {
             const data = docItem.data();
 
@@ -707,7 +779,7 @@ export default function RelatoriosPage() {
             </p>
           </div>
 
-          <div className="w-full max-w-xl space-y-3 rounded-3xl border border-slate-200 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+          <div className="w-full max-w-xl space-y-3">
             <div className="grid gap-3 md:grid-cols-[1fr_auto_auto] md:items-end">
               <div>
                 <label className="mb-1.5 block text-[11px] uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">
@@ -717,7 +789,7 @@ export default function RelatoriosPage() {
                   type="month"
                   value={referenceMonthKey}
                   onChange={(event) => setReferenceMonthKey(event.target.value)}
-                  className="h-11 rounded-2xl border-slate-200 bg-white dark:border-white/10 dark:bg-black/20 dark:text-white"
+                  className="app-field h-11"
                 />
               </div>
               <Button
@@ -745,7 +817,7 @@ export default function RelatoriosPage() {
             </div>
 
             <div className="grid gap-3 md:grid-cols-3">
-              <div className="rounded-2xl border border-slate-200 bg-white p-3 dark:border-white/10 dark:bg-black/10">
+              <div className="app-inline-stat p-3">
                 <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
                   Custo total
                 </p>
@@ -753,7 +825,7 @@ export default function RelatoriosPage() {
                   {formatCurrency(analytics.overview.totalCost)}
                 </p>
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-3 dark:border-white/10 dark:bg-black/10">
+              <div className="app-inline-stat p-3">
                 <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
                   Km rodado
                 </p>
@@ -761,7 +833,7 @@ export default function RelatoriosPage() {
                   {formatNumber(analytics.overview.totalKm, " km")}
                 </p>
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-3 dark:border-white/10 dark:bg-black/10">
+              <div className="app-inline-stat p-3">
                 <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
                   Eficiencia
                 </p>
@@ -782,7 +854,7 @@ export default function RelatoriosPage() {
         <StatusBanner tone="success">{successMsg}</StatusBanner>
       ) : null}
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
         <KpiCard
           title="Custo Total"
           value={formatCurrency(analytics.overview.totalCost)}
@@ -849,7 +921,7 @@ export default function RelatoriosPage() {
         />
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
         <KpiCard
           title="Combustível"
           value={formatCurrency(analytics.overview.totalFuelCost)}
@@ -929,7 +1001,7 @@ export default function RelatoriosPage() {
 
       {!loading && activeTab === "overview" ? (
         <div className="space-y-4">
-          <div className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">
+          <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
             <Card className={reportPanelClass}>
               <div className="mb-5 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                 <div>
@@ -940,7 +1012,7 @@ export default function RelatoriosPage() {
                     Custo e quilometragem dos últimos meses
                   </h2>
                 </div>
-                <span className="rounded-full border border-slate-200 dark:border-white/10 bg-slate-50/80 dark:bg-white/[0.03] px-3 py-1 text-xs text-slate-600 dark:text-slate-300">
+                <span className="app-chip">
                   Últimos {monthlyTrend.length} mês(es)
                 </span>
               </div>
@@ -948,67 +1020,95 @@ export default function RelatoriosPage() {
               {monthlyTrend.length === 0 ? (
                 <EmptyPanel text="Nenhum histórico suficiente para montar a evolução mensal." />
               ) : (
-                <div className="h-80">
+                <ChartFrame className="h-[22rem]">
                   <ResponsiveContainer width="100%" height="100%">
-                    <ComposedChart data={monthlyTrend}>
-                      <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
+                    <ComposedChart data={monthlyTrend} margin={chartMargin} barCategoryGap="28%">
+                      <defs>
+                        <linearGradient id="monthlyFuelGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor={chartColors.fuel} stopOpacity={0.95} />
+                          <stop offset="100%" stopColor={chartColors.fuel} stopOpacity={0.42} />
+                        </linearGradient>
+                        <linearGradient id="monthlyMaintenanceGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor={chartColors.maintenance} stopOpacity={0.95} />
+                          <stop offset="100%" stopColor={chartColors.maintenance} stopOpacity={0.38} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid
+                        stroke={chartColors.grid}
+                        strokeDasharray="4 8"
+                        vertical={false}
+                      />
                       <XAxis
                         dataKey="shortLabel"
-                        tick={{ fill: "#94a3b8", fontSize: 11 }}
+                        tick={chartTick}
                         axisLine={false}
                         tickLine={false}
+                        tickMargin={12}
                       />
                       <YAxis
                         yAxisId="cost"
-                        tick={{ fill: "#94a3b8", fontSize: 11 }}
+                        tick={chartTick}
                         axisLine={false}
                         tickLine={false}
+                        width={68}
                         tickFormatter={(value) => `R$ ${Number(value).toFixed(0)}`}
                       />
                       <YAxis
                         yAxisId="km"
                         orientation="right"
-                        tick={{ fill: "#94a3b8", fontSize: 11 }}
+                        tick={chartTick}
                         axisLine={false}
                         tickLine={false}
+                        width={58}
                         tickFormatter={(value) => `${Number(value).toFixed(0)} km`}
                       />
                       <Tooltip
                         contentStyle={chartTooltipStyle}
-                        formatter={(value: number, name: string) => {
-                          if (name === "Km") return [formatNumber(value, " km"), name];
-                          return [formatCurrency(value), name];
+                        cursor={{ fill: chartColors.cursor }}
+                        formatter={(value, name) => {
+                          const numericValue = Number(value ?? 0);
+                          const label = String(name);
+                          if (label === "Km") {
+                            return [formatNumber(numericValue, " km"), label];
+                          }
+                          return [formatCurrency(numericValue), label];
                         }}
                       />
-                      <Legend />
+                      <Legend
+                        iconType="circle"
+                        wrapperStyle={chartLegendStyle}
+                      />
                       <Bar
                         yAxisId="cost"
                         dataKey="fuelCost"
                         name="Combustível"
                         stackId="cost"
-                        fill="#f59e0b"
-                        radius={[8, 8, 0, 0]}
+                        fill="url(#monthlyFuelGradient)"
+                        radius={[10, 10, 4, 4]}
+                        maxBarSize={34}
                       />
                       <Bar
                         yAxisId="cost"
                         dataKey="maintenanceCost"
                         name="Manutenção"
                         stackId="cost"
-                        fill="#38bdf8"
-                        radius={[8, 8, 0, 0]}
+                        fill="url(#monthlyMaintenanceGradient)"
+                        radius={[10, 10, 4, 4]}
+                        maxBarSize={34}
                       />
                       <Line
                         yAxisId="km"
                         type="monotone"
                         dataKey="km"
                         name="Km"
-                        stroke="#34d399"
+                        stroke={chartColors.km}
                         strokeWidth={3}
-                        dot={{ r: 3, fill: "#34d399" }}
+                        dot={{ r: 4, fill: "#ecfdf5", stroke: chartColors.km, strokeWidth: 2 }}
+                        activeDot={{ r: 6, fill: chartColors.km, stroke: "#ffffff", strokeWidth: 2 }}
                       />
                     </ComposedChart>
                   </ResponsiveContainer>
-                </div>
+                </ChartFrame>
               )}
             </Card>
 
@@ -1026,34 +1126,64 @@ export default function RelatoriosPage() {
                 <EmptyPanel text="Sem custos no período selecionado para compor o gráfico." />
               ) : (
                 <>
-                  <div className="h-72">
+                  <ChartFrame className="h-72">
+                    <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+                      <div className="text-center">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                          Total
+                        </p>
+                        <p className="mt-1 text-lg font-semibold text-slate-950 dark:text-white">
+                          {formatCurrency(analytics.overview.totalCost)}
+                        </p>
+                      </div>
+                    </div>
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
+                        <defs>
+                          <linearGradient id="costFuelPieGradient" x1="0" y1="0" x2="1" y2="1">
+                            <stop offset="0%" stopColor={chartColors.fuel} stopOpacity={0.98} />
+                            <stop offset="100%" stopColor="#fde68a" stopOpacity={0.68} />
+                          </linearGradient>
+                          <linearGradient id="costMaintenancePieGradient" x1="0" y1="0" x2="1" y2="1">
+                            <stop offset="0%" stopColor={chartColors.maintenance} stopOpacity={0.98} />
+                            <stop offset="100%" stopColor="#bae6fd" stopOpacity={0.58} />
+                          </linearGradient>
+                        </defs>
                         <Pie
                           data={analytics.costComposition}
                           dataKey="value"
                           nameKey="name"
-                          innerRadius={75}
+                          innerRadius={78}
                           outerRadius={110}
-                          paddingAngle={4}
+                          paddingAngle={5}
+                          cornerRadius={10}
+                          stroke="rgba(255,255,255,0.88)"
+                          strokeWidth={3}
                         >
                           {analytics.costComposition.map((entry) => (
-                            <Cell key={entry.name} fill={entry.fill} />
+                            <Cell
+                              key={entry.name}
+                              fill={
+                                entry.name.toLowerCase().includes("combust")
+                                  ? "url(#costFuelPieGradient)"
+                                  : "url(#costMaintenancePieGradient)"
+                              }
+                            />
                           ))}
                         </Pie>
                         <Tooltip
                           contentStyle={chartTooltipStyle}
-                          formatter={(value: number) => formatCurrency(value)}
+                          formatter={(value) => formatCurrency(Number(value ?? 0))}
                         />
                       </PieChart>
                     </ResponsiveContainer>
-                  </div>
+                  </ChartFrame>
 
                   <div className="space-y-2">
                     {analytics.costComposition.map((item) => (
                       <div
                         key={item.name}
-                        className="flex items-center justify-between rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50/80 dark:bg-white/[0.03] px-3 py-2 text-sm"
+                        className="app-inline-stat flex items-center justify-between px-3 py-2 text-sm"
                       >
                         <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
                           <span
@@ -1078,7 +1208,7 @@ export default function RelatoriosPage() {
             </Card>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid gap-4 2xl:grid-cols-2">
             <Card className={reportPanelClass}>
               <div className="mb-5">
                 <p className="text-xs uppercase tracking-[0.22em] text-slate-500">
@@ -1148,7 +1278,7 @@ export default function RelatoriosPage() {
               </div>
 
               <div className="grid gap-3 md:grid-cols-2">
-                <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50/80 dark:bg-white/[0.03] p-4">
+                <div className="app-inline-stat p-4">
                   <p className="text-sm text-slate-500 dark:text-slate-400">Ticket médio do abastecimento</p>
                   <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
                     {analytics.overview.avgFuelTicket > 0
@@ -1156,7 +1286,7 @@ export default function RelatoriosPage() {
                       : "-"}
                   </p>
                 </div>
-                <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50/80 dark:bg-white/[0.03] p-4">
+                <div className="app-inline-stat p-4">
                   <p className="text-sm text-slate-500 dark:text-slate-400">Ticket médio da manutenção</p>
                   <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
                     {analytics.overview.avgMaintenanceTicket > 0
@@ -1164,7 +1294,7 @@ export default function RelatoriosPage() {
                       : "-"}
                   </p>
                 </div>
-                <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50/80 dark:bg-white/[0.03] p-4">
+                <div className="app-inline-stat p-4">
                   <p className="text-sm text-slate-500 dark:text-slate-400">Distância média por rota</p>
                   <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
                     {analytics.overview.avgRouteDistance > 0
@@ -1172,7 +1302,7 @@ export default function RelatoriosPage() {
                       : "-"}
                   </p>
                 </div>
-                <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-50/80 dark:bg-white/[0.03] p-4">
+                <div className="app-inline-stat p-4">
                   <p className="text-sm text-slate-500 dark:text-slate-400">Taxa de cancelamento</p>
                   <p className="mt-2 text-xl font-semibold text-slate-950 dark:text-white">
                     {formatPercent(analytics.overview.cancellationRate)}
@@ -1182,7 +1312,7 @@ export default function RelatoriosPage() {
             </Card>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-2">
+          <div className="grid gap-4 2xl:grid-cols-2">
             <Card className={reportPanelClass}>
               <div className="mb-5 flex items-center justify-between gap-2">
                 <div>
@@ -1199,30 +1329,52 @@ export default function RelatoriosPage() {
               {analytics.topVehicleCostChart.length === 0 ? (
                 <EmptyPanel text="Nenhum veículo com custo registrado no período." />
               ) : (
-                <div className="h-72">
+                <ChartFrame>
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={analytics.topVehicleCostChart}>
-                      <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
+                    <BarChart
+                      data={analytics.topVehicleCostChart}
+                      margin={chartMargin}
+                      barCategoryGap="30%"
+                    >
+                      <defs>
+                        <linearGradient id="vehicleCostGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor={chartColors.fuel} stopOpacity={0.98} />
+                          <stop offset="100%" stopColor={chartColors.fuel} stopOpacity={0.4} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid
+                        stroke={chartColors.grid}
+                        strokeDasharray="4 8"
+                        vertical={false}
+                      />
                       <XAxis
                         dataKey="name"
-                        tick={{ fill: "#94a3b8", fontSize: 11 }}
+                        tick={chartTick}
                         axisLine={false}
                         tickLine={false}
+                        tickMargin={12}
                       />
                       <YAxis
-                        tick={{ fill: "#94a3b8", fontSize: 11 }}
+                        tick={chartTick}
                         axisLine={false}
                         tickLine={false}
+                        width={68}
                         tickFormatter={(value) => `R$ ${Number(value).toFixed(0)}`}
                       />
                       <Tooltip
                         contentStyle={chartTooltipStyle}
-                        formatter={(value: number) => formatCurrency(value)}
+                        cursor={{ fill: chartColors.cursor }}
+                        formatter={(value) => formatCurrency(Number(value ?? 0))}
                       />
-                      <Bar dataKey="totalCost" fill="#f59e0b" radius={[10, 10, 0, 0]} />
+                      <Bar
+                        dataKey="totalCost"
+                        fill="url(#vehicleCostGradient)"
+                        radius={[12, 12, 4, 4]}
+                        maxBarSize={42}
+                      />
                     </BarChart>
                   </ResponsiveContainer>
-                </div>
+                </ChartFrame>
               )}
             </Card>
 
@@ -1242,13 +1394,28 @@ export default function RelatoriosPage() {
               {analytics.responsibleCostChart.length === 0 ? (
                 <EmptyPanel text="Nenhum responsável com movimentação no período." />
               ) : (
-                <div className="h-72">
+                <ChartFrame>
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={analytics.responsibleCostChart} layout="vertical">
-                      <CartesianGrid stroke="rgba(148,163,184,0.12)" horizontal={false} />
+                    <BarChart
+                      data={analytics.responsibleCostChart}
+                      layout="vertical"
+                      margin={{ top: 12, right: 12, bottom: 6, left: 10 }}
+                      barCategoryGap="28%"
+                    >
+                      <defs>
+                        <linearGradient id="responsibleCostGradient" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor={chartColors.maintenance} stopOpacity={0.45} />
+                          <stop offset="100%" stopColor={chartColors.maintenance} stopOpacity={0.98} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid
+                        stroke={chartColors.grid}
+                        strokeDasharray="4 8"
+                        horizontal={false}
+                      />
                       <XAxis
                         type="number"
-                        tick={{ fill: "#94a3b8", fontSize: 11 }}
+                        tick={chartTick}
                         axisLine={false}
                         tickLine={false}
                         tickFormatter={(value) => `R$ ${Number(value).toFixed(0)}`}
@@ -1257,18 +1424,24 @@ export default function RelatoriosPage() {
                         type="category"
                         dataKey="name"
                         width={110}
-                        tick={{ fill: "#94a3b8", fontSize: 11 }}
+                        tick={chartTick}
                         axisLine={false}
                         tickLine={false}
                       />
                       <Tooltip
                         contentStyle={chartTooltipStyle}
-                        formatter={(value: number) => formatCurrency(value)}
+                        cursor={{ fill: chartColors.cursor }}
+                        formatter={(value) => formatCurrency(Number(value ?? 0))}
                       />
-                      <Bar dataKey="totalCost" fill="#38bdf8" radius={[0, 10, 10, 0]} />
+                      <Bar
+                        dataKey="totalCost"
+                        fill="url(#responsibleCostGradient)"
+                        radius={[0, 12, 12, 0]}
+                        maxBarSize={28}
+                      />
                     </BarChart>
                   </ResponsiveContainer>
-                </div>
+                </ChartFrame>
               )}
             </Card>
           </div>
@@ -1436,36 +1609,50 @@ export default function RelatoriosPage() {
             {analytics.topVehicleKmChart.length === 0 ? (
               <EmptyPanel text="Nenhum veículo com quilometragem registrada no período." />
             ) : (
-              <div className="h-72">
+              <ChartFrame>
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={analytics.topVehicleKmChart}>
-                    <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
+                  <AreaChart data={analytics.topVehicleKmChart} margin={chartMargin}>
+                    <defs>
+                      <linearGradient id="vehicleKmAreaGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={chartColors.fuel} stopOpacity={0.52} />
+                        <stop offset="100%" stopColor={chartColors.fuel} stopOpacity={0.03} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid
+                      stroke={chartColors.grid}
+                      strokeDasharray="4 8"
+                      vertical={false}
+                    />
                     <XAxis
                       dataKey="name"
-                      tick={{ fill: "#94a3b8", fontSize: 11 }}
+                      tick={chartTick}
                       axisLine={false}
                       tickLine={false}
+                      tickMargin={12}
                     />
                     <YAxis
-                      tick={{ fill: "#94a3b8", fontSize: 11 }}
+                      tick={chartTick}
                       axisLine={false}
                       tickLine={false}
+                      width={62}
                       tickFormatter={(value) => `${Number(value).toFixed(0)} km`}
                     />
                     <Tooltip
                       contentStyle={chartTooltipStyle}
-                      formatter={(value: number) => formatNumber(value, " km")}
+                      cursor={{ stroke: chartColors.fuel, strokeOpacity: 0.18 }}
+                      formatter={(value) => formatNumber(Number(value ?? 0), " km")}
                     />
                     <Area
                       type="monotone"
                       dataKey="km"
-                      stroke="#f59e0b"
-                      fill="rgba(245,158,11,0.35)"
+                      stroke={chartColors.fuel}
+                      fill="url(#vehicleKmAreaGradient)"
                       strokeWidth={3}
+                      activeDot={{ r: 6, fill: chartColors.fuel, stroke: "#ffffff", strokeWidth: 2 }}
                     />
                   </AreaChart>
                 </ResponsiveContainer>
-              </div>
+              </ChartFrame>
             )}
           </Card>
 
@@ -1573,37 +1760,67 @@ export default function RelatoriosPage() {
             {analytics.responsibleCostChart.length === 0 ? (
               <EmptyPanel text="Nenhum responsável com dados suficientes no período." />
             ) : (
-              <div className="h-72">
+              <ChartFrame>
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={analytics.responsibleCostChart}>
-                    <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
+                  <BarChart
+                    data={analytics.responsibleCostChart}
+                    margin={chartMargin}
+                    barCategoryGap="28%"
+                  >
+                    <defs>
+                      <linearGradient id="responsibleFuelStackGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={chartColors.fuel} stopOpacity={0.96} />
+                        <stop offset="100%" stopColor={chartColors.fuel} stopOpacity={0.4} />
+                      </linearGradient>
+                      <linearGradient id="responsibleMaintenanceStackGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={chartColors.maintenance} stopOpacity={0.96} />
+                        <stop offset="100%" stopColor={chartColors.maintenance} stopOpacity={0.38} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid
+                      stroke={chartColors.grid}
+                      strokeDasharray="4 8"
+                      vertical={false}
+                    />
                     <XAxis
                       dataKey="name"
-                      tick={{ fill: "#94a3b8", fontSize: 11 }}
+                      tick={chartTick}
                       axisLine={false}
                       tickLine={false}
+                      tickMargin={12}
                     />
                     <YAxis
-                      tick={{ fill: "#94a3b8", fontSize: 11 }}
+                      tick={chartTick}
                       axisLine={false}
                       tickLine={false}
+                      width={68}
                       tickFormatter={(value) => `R$ ${Number(value).toFixed(0)}`}
                     />
                     <Tooltip
                       contentStyle={chartTooltipStyle}
-                      formatter={(value: number) => formatCurrency(value)}
+                      cursor={{ fill: chartColors.cursor }}
+                      formatter={(value) => formatCurrency(Number(value ?? 0))}
                     />
-                    <Legend />
-                    <Bar dataKey="fuelCost" name="Combustível" stackId="a" fill="#f59e0b" />
+                    <Legend iconType="circle" wrapperStyle={chartLegendStyle} />
+                    <Bar
+                      dataKey="fuelCost"
+                      name="Combustível"
+                      stackId="a"
+                      fill="url(#responsibleFuelStackGradient)"
+                      radius={[10, 10, 4, 4]}
+                      maxBarSize={38}
+                    />
                     <Bar
                       dataKey="maintenanceCost"
                       name="Manutenção"
                       stackId="a"
-                      fill="#38bdf8"
+                      fill="url(#responsibleMaintenanceStackGradient)"
+                      radius={[10, 10, 4, 4]}
+                      maxBarSize={38}
                     />
                   </BarChart>
                 </ResponsiveContainer>
-              </div>
+              </ChartFrame>
             )}
           </Card>
 
@@ -1689,30 +1906,52 @@ export default function RelatoriosPage() {
             {analytics.driverKmChart.length === 0 ? (
               <EmptyPanel text="Nenhum motorista com rotas registradas no período." />
             ) : (
-              <div className="h-72">
+              <ChartFrame>
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={analytics.driverKmChart}>
-                    <CartesianGrid stroke="rgba(148,163,184,0.12)" vertical={false} />
+                  <BarChart
+                    data={analytics.driverKmChart}
+                    margin={chartMargin}
+                    barCategoryGap="30%"
+                  >
+                    <defs>
+                      <linearGradient id="driverKmGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={chartColors.driver} stopOpacity={0.96} />
+                        <stop offset="100%" stopColor={chartColors.driver} stopOpacity={0.34} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid
+                      stroke={chartColors.grid}
+                      strokeDasharray="4 8"
+                      vertical={false}
+                    />
                     <XAxis
                       dataKey="name"
-                      tick={{ fill: "#94a3b8", fontSize: 11 }}
+                      tick={chartTick}
                       axisLine={false}
                       tickLine={false}
+                      tickMargin={12}
                     />
                     <YAxis
-                      tick={{ fill: "#94a3b8", fontSize: 11 }}
+                      tick={chartTick}
                       axisLine={false}
                       tickLine={false}
+                      width={62}
                       tickFormatter={(value) => `${Number(value).toFixed(0)} km`}
                     />
                     <Tooltip
                       contentStyle={chartTooltipStyle}
-                      formatter={(value: number) => formatNumber(value, " km")}
+                      cursor={{ fill: chartColors.cursor }}
+                      formatter={(value) => formatNumber(Number(value ?? 0), " km")}
                     />
-                    <Bar dataKey="km" fill="#34d399" radius={[10, 10, 0, 0]} />
+                    <Bar
+                      dataKey="km"
+                      fill="url(#driverKmGradient)"
+                      radius={[12, 12, 4, 4]}
+                      maxBarSize={42}
+                    />
                   </BarChart>
                 </ResponsiveContainer>
-              </div>
+              </ChartFrame>
             )}
           </Card>
 

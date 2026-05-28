@@ -1,5 +1,7 @@
 "use client";
 
+import { normalizeStoreKey } from "@/lib/store-utils";
+
 export type ReportRouteStatus =
   | "em_andamento"
   | "finalizada"
@@ -626,11 +628,14 @@ export function buildReportAnalytics({
     return driverMap.get(key)!;
   }
 
-  function ensureStoreRow(key: string) {
+  function ensureStoreRow(storeId?: string | null) {
+    const label = (storeId || "Sem loja").trim() || "Sem loja";
+    const key = normalizeStoreKey(label) || "sem loja";
+
     if (!storeMap.has(key)) {
       storeMap.set(key, {
         key,
-        storeId: key,
+        storeId: label,
         km: 0,
         liters: 0,
         fuelCost: 0,

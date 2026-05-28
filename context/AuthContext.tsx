@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useState } from "react";
 import { auth, db } from "@/lib/firebase";
-import { onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged, signOut } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 
 interface UserData {
@@ -11,6 +11,7 @@ interface UserData {
   role: "admin" | "user";
   storeId: string;
   mustChangePassword: boolean;
+  active: boolean;
 }
 
 interface AuthContextProps {
@@ -28,34 +29,65 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let mounted = true;
+
     const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (!mounted) return;
+
       if (!firebaseUser) {
         setUser(null);
         setLoading(false);
         return;
       }
 
-      const ref = doc(db, "users", firebaseUser.uid);
-      const snap = await getDoc(ref);
+      try {
+        setLoading(true);
 
-      if (!snap.exists()) {
-        setUser(null);
-        setLoading(false);
-        return;
+        const ref = doc(db, "users", firebaseUser.uid);
+        const snap = await getDoc(ref);
+
+        if (!mounted) return;
+
+        if (!snap.exists()) {
+          setUser(null);
+          await signOut(auth);
+          return;
+        }
+
+        const data = snap.data();
+        const isActive = data.active !== false;
+
+        if (!isActive) {
+          setUser(null);
+          await signOut(auth);
+          return;
+        }
+
+        setUser({
+          id: firebaseUser.uid,
+          name: typeof data.name === "string" ? data.name : "Usuario MM",
+          role: data.role === "admin" ? "admin" : "user",
+          storeId: typeof data.storeId === "string" ? data.storeId : "",
+          mustChangePassword: Boolean(data.mustChangePassword),
+          active: isActive,
+        });
+      } catch (error) {
+        console.error("Erro ao recuperar sessao do usuario:", error);
+
+        if (mounted) {
+          setUser(null);
+        }
+      } finally {
+        if (mounted) {
+          setLoading(false);
+        }
       }
-
-      setUser({
-        id: firebaseUser.uid,
-        name: snap.data().name,
-        role: snap.data().role,
-        storeId: snap.data().storeId,
-        mustChangePassword: snap.data().mustChangePassword,
-      });
-
-      setLoading(false);
     });
 
-    return () => unsub();
+    return () => {
+      mounted = false;
+      unsub();
+    };
   }, []);
 
   return (

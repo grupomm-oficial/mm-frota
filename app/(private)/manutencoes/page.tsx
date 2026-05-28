@@ -8,7 +8,6 @@ import {
   doc,
   query,
   orderBy,
-  updateDoc,
   writeBatch,
 } from "firebase/firestore";
 import { useAuth } from "@/context/AuthContext";
@@ -28,6 +27,22 @@ import { MetricCard } from "@/components/layout/MetricCard";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { StatusBanner } from "@/components/layout/StatusBanner";
 import { ActionIconButton } from "@/components/ui/action-icon-button";
+import {
+  getNumberValue,
+  getOptionalNumberValue,
+  getOptionalStringValue,
+  getStringArrayValue,
+  getStringValue,
+  toFirestoreRecord,
+} from "@/lib/firestore-fields";
+import {
+  getRecordDocsForUserByVehicles,
+  getVehicleDocsForUser,
+} from "@/lib/firestore-access";
+import {
+  getCanonicalStoreOptions,
+  normalizeStoreKey,
+} from "@/lib/store-utils";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -83,6 +98,97 @@ interface Maintenance {
   editReason?: string | null;
 }
 
+function parseVehicleOption(id: string, value: unknown): VehicleOption {
+  const data = toFirestoreRecord(value);
+
+  return {
+    id,
+    plate: getStringValue(data.plate),
+    model: getStringValue(data.model),
+    storeId: getStringValue(data.storeId),
+    currentKm: getOptionalNumberValue(data.currentKm) ?? undefined,
+    status:
+      data.status === "em_rota" || data.status === "manutencao"
+        ? data.status
+        : "disponivel",
+    responsibleUserId: getOptionalStringValue(data.responsibleUserId) ?? undefined,
+    responsibleUserName: getOptionalStringValue(data.responsibleUserName) ?? undefined,
+    responsibleUserIds: getStringArrayValue(data.responsibleUserIds),
+  };
+}
+
+function parseMaintenance(id: string, value: unknown): Maintenance {
+  const data = toFirestoreRecord(value);
+
+  return {
+    id,
+    vehicleId: getStringValue(data.vehicleId),
+    vehiclePlate: getStringValue(data.vehiclePlate),
+    vehicleModel: getStringValue(data.vehicleModel),
+    storeId: getStringValue(data.storeId),
+    responsibleUserId: getStringValue(data.responsibleUserId),
+    responsibleUserName: getStringValue(data.responsibleUserName),
+    date: getStringValue(data.date),
+    odometerKm: getNumberValue(data.odometerKm),
+    cost: getNumberValue(data.cost),
+    type: getStringValue(data.type),
+    workshopName: getOptionalStringValue(data.workshopName),
+    notes: getOptionalStringValue(data.notes),
+    status: data.status === "concluida" ? "concluida" : "em_andamento",
+    endKm: getOptionalNumberValue(data.endKm),
+    endDate: getOptionalStringValue(data.endDate),
+    updatedAt: getOptionalStringValue(data.updatedAt),
+    updatedById: getOptionalStringValue(data.updatedById),
+    updatedByName: getOptionalStringValue(data.updatedByName),
+    editReason: getOptionalStringValue(data.editReason),
+  };
+}
+
+function getCurrentMonthDateRange() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+
+  const toInputDate = (date: Date) => {
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, "0");
+    const dd = String(date.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  return {
+    start: toInputDate(new Date(year, month, 1)),
+    end: toInputDate(new Date(year, month + 1, 0)),
+  };
+}
+
+function getVehicleStatusLabel(status?: VehicleOption["status"]) {
+  if (status === "em_rota") return "Em rota";
+  if (status === "manutencao") return "Em manutencao";
+  return "Disponivel";
+}
+
+function getResponsibleCoverageCount(
+  vehicle?: Pick<VehicleOption, "responsibleUserId" | "responsibleUserIds"> | null
+) {
+  if (!vehicle) return 0;
+  if (vehicle.responsibleUserIds?.length) return vehicle.responsibleUserIds.length;
+  return vehicle.responsibleUserId ? 1 : 0;
+}
+
+function canUserUseVehicle(
+  user: { id: string; role?: string; storeId?: string | null } | null | undefined,
+  vehicle: VehicleOption
+) {
+  if (!user) return false;
+  if (user.role === "admin") return true;
+
+  const singleMatch = vehicle.responsibleUserId === user.id;
+  const multiMatch = vehicle.responsibleUserIds?.includes(user.id) ?? false;
+
+  return singleMatch || multiMatch;
+}
+
 export default function ManutencoesPage() {
   const { user } = useAuth();
   const router = useRouter();
@@ -135,17 +241,6 @@ export default function ManutencoesPage() {
     }
   }, [user, router]);
 
-  // helper: verifica se o usuário pode usar / ver um veículo
-  function userCanUseVehicle(vehicle: VehicleOption): boolean {
-    if (!user) return false;
-    if (user.role === "admin") return true;
-
-    const singleMatch = vehicle.responsibleUserId === user.id;
-    const multiMatch = vehicle.responsibleUserIds?.includes(user.id) ?? false;
-
-    return singleMatch || multiMatch;
-  }
-
   function toDateTimeLocalValue(value?: string | null) {
     const source = value ? new Date(value) : new Date();
     if (Number.isNaN(source.getTime())) return "";
@@ -156,22 +251,9 @@ export default function ManutencoesPage() {
 
   // Define período padrão = mês corrente
   useEffect(() => {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth(); // 0-11
-
-    const first = new Date(year, month, 1);
-    const last = new Date(year, month + 1, 0);
-
-    const toInputDate = (d: Date) => {
-      const yyyy = d.getFullYear();
-      const mm = String(d.getMonth() + 1).padStart(2, "0");
-      const dd = String(d.getDate()).padStart(2, "0");
-      return `${yyyy}-${mm}-${dd}`;
-    };
-
-    setStartFilter(toInputDate(first));
-    setEndFilter(toInputDate(last));
+    const { start, end } = getCurrentMonthDateRange();
+    setStartFilter(start);
+    setEndFilter(end);
   }, []);
 
   useEffect(() => {
@@ -181,61 +263,33 @@ export default function ManutencoesPage() {
         setLoading(true);
         setErrorMsg("");
 
-        // ===== VEÃCULOS ACESSÃVEIS =====
-        const vehiclesSnap = await getDocs(collection(db, "vehicles"));
-        const vListAll: VehicleOption[] = vehiclesSnap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            plate: data.plate,
-            model: data.model,
-            storeId: data.storeId,
-            currentKm: data.currentKm,
-            status: data.status,
-            responsibleUserId: data.responsibleUserId,
-            responsibleUserName: data.responsibleUserName,
-            responsibleUserIds: Array.isArray(data.responsibleUserIds)
-              ? data.responsibleUserIds
-              : undefined,
-          };
-        });
+        const vehicleDocs = await getVehicleDocsForUser(db, user);
+        const vListAll = vehicleDocs.map((snapshot) =>
+          parseVehicleOption(snapshot.id, snapshot.data())
+        );
 
         let vList = vListAll;
         if (!isAdmin) {
-          vList = vListAll.filter((v) => userCanUseVehicle(v));
+          vList = vListAll.filter((v) => canUserUseVehicle(user, v));
         }
         setVehicles(vList);
 
-        // ===== MANUTENÃ‡Ã•ES =====
-        const maintSnap = await getDocs(
-          query(collection(db, "maintenances"), orderBy("date", "desc"))
-        );
+        const maintenanceDocs = isAdmin
+          ? (
+              await getDocs(
+                query(collection(db, "maintenances"), orderBy("date", "desc"))
+              )
+            ).docs
+          : await getRecordDocsForUserByVehicles(
+              db,
+              "maintenances",
+              user,
+              vList.map((vehicle) => vehicle.id)
+            );
 
-        let mList: Maintenance[] = maintSnap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            vehicleId: data.vehicleId,
-            vehiclePlate: data.vehiclePlate,
-            vehicleModel: data.vehicleModel,
-            storeId: data.storeId,
-            responsibleUserId: data.responsibleUserId,
-            responsibleUserName: data.responsibleUserName,
-            date: data.date,
-            odometerKm: data.odometerKm,
-            cost: data.cost,
-            type: data.type,
-            workshopName: data.workshopName ?? null,
-            notes: data.notes ?? null,
-            status: data.status ?? "em_andamento",
-            endKm: data.endKm ?? null,
-            endDate: data.endDate ?? null,
-            updatedAt: data.updatedAt ?? null,
-            updatedById: data.updatedById ?? null,
-            updatedByName: data.updatedByName ?? null,
-            editReason: data.editReason ?? null,
-          };
-        });
+        let mList = maintenanceDocs.map((snapshot) =>
+          parseMaintenance(snapshot.id, snapshot.data())
+        );
 
         if (!isAdmin) {
           const allowedVehicleIds = new Set(vList.map((v) => v.id));
@@ -247,7 +301,7 @@ export default function ManutencoesPage() {
           );
         }
 
-        setMaintenances(mList);
+        setMaintenances(mList.sort((a, b) => (b.date || "").localeCompare(a.date || "")));
       } catch (error) {
         console.error("Erro ao carregar manutenções:", error);
         setErrorMsg("Erro ao carregar dados. Tente novamente.");
@@ -367,8 +421,13 @@ export default function ManutencoesPage() {
         return;
       }
 
+      if (!vehicle.storeId) {
+        setErrorMsg("Este veiculo nao possui loja vinculada. Ajuste o cadastro antes de abrir manutencao.");
+        return;
+      }
+
       // Permissão: precisa ser admin ou responsável pelo veículo
-      if (!userCanUseVehicle(vehicle)) {
+      if (!canUserUseVehicle(user, vehicle)) {
         setErrorMsg(
           "Você não tem permissão para registrar manutenção para este veículo."
         );
@@ -406,6 +465,12 @@ export default function ManutencoesPage() {
         return;
       }
 
+      const normalizedType = type.trim();
+      if (normalizedType.length < 3) {
+        setErrorMsg("Informe um tipo de manutencao com pelo menos 3 caracteres.");
+        return;
+      }
+
       if (!user) {
         setErrorMsg("Sessão expirada. Faça login novamente.");
         router.replace("/login");
@@ -413,6 +478,8 @@ export default function ManutencoesPage() {
       }
 
       const nowISO = date || new Date().toISOString();
+      const nextWorkshopName = workshopName.trim() || null;
+      const nextNotes = notes.trim() || null;
 
       const newDoc = doc(collection(db, "maintenances"));
       const batch = writeBatch(db);
@@ -427,9 +494,9 @@ export default function ManutencoesPage() {
         date: nowISO,
         odometerKm: odom,
         cost: valor,
-        type,
-        workshopName: workshopName || null,
-        notes: notes || null,
+        type: normalizedType,
+        workshopName: nextWorkshopName,
+        notes: nextNotes,
         status: "em_andamento" as MaintenanceStatus,
         endKm: null,
         endDate: null,
@@ -456,9 +523,9 @@ export default function ManutencoesPage() {
           date: nowISO,
           odometerKm: odom,
           cost: valor,
-          type,
-          workshopName: workshopName || null,
-          notes: notes || null,
+          type: normalizedType,
+          workshopName: nextWorkshopName,
+          notes: nextNotes,
           status: "em_andamento",
           endKm: null,
           endDate: null,
@@ -590,7 +657,6 @@ export default function ManutencoesPage() {
     if (!editingMaintenance || !user || !isAdmin) return;
 
     try {
-      setSaving(true);
       setErrorMsg("");
       setSuccessMsg("");
 
@@ -602,6 +668,10 @@ export default function ManutencoesPage() {
       const nextOdometer = Number(editOdometerKm.replace(",", "."));
       const nextCost = Number(editCost.replace(",", "."));
       const nextEndKm = editEndKm ? Number(editEndKm.replace(",", ".")) : null;
+      const nextType = editType.trim();
+      const nextWorkshopName = editWorkshopName.trim() || null;
+      const nextNotes = editNotes.trim() || null;
+      const nextEditReason = editReason.trim();
 
       if (Number.isNaN(nextOdometer) || nextOdometer <= 0) {
         setErrorMsg("KM de entrada invalido.");
@@ -609,6 +679,10 @@ export default function ManutencoesPage() {
       }
       if (Number.isNaN(nextCost) || nextCost <= 0) {
         setErrorMsg("Custo invalido.");
+        return;
+      }
+      if (nextType.length < 3) {
+        setErrorMsg("Informe um tipo de manutencao com pelo menos 3 caracteres.");
         return;
       }
       if (
@@ -621,32 +695,70 @@ export default function ManutencoesPage() {
         return;
       }
 
-      const updatedAt = new Date().toISOString();
       const nextDate = editDate || toDateTimeLocalValue(editingMaintenance.date);
+      const hasChanges =
+        nextDate !== (editingMaintenance.date || "") ||
+        nextOdometer !== editingMaintenance.odometerKm ||
+        nextCost !== editingMaintenance.cost ||
+        nextType !== editingMaintenance.type ||
+        nextWorkshopName !== (editingMaintenance.workshopName ?? null) ||
+        nextNotes !== (editingMaintenance.notes ?? null) ||
+        (editingMaintenance.status === "concluida"
+          ? nextEndKm !== (editingMaintenance.endKm ?? null)
+          : false);
+
+      if (!hasChanges) {
+        setErrorMsg("Faça alguma alteracao antes de salvar a edicao.");
+        return;
+      }
+
+      if (!nextEditReason) {
+        setErrorMsg("Informe o motivo da alteracao para manter a auditoria da manutencao.");
+        return;
+      }
+
+      const previousVehicleKmReference =
+        editingMaintenance.status === "concluida"
+          ? editingMaintenance.endKm ?? editingMaintenance.odometerKm
+          : editingMaintenance.odometerKm;
+      const nextVehicleKmReference =
+        editingMaintenance.status === "concluida"
+          ? nextEndKm ?? nextOdometer
+          : nextOdometer;
+
+      const confirmed = window.confirm(
+        `Confirmar ajuste administrativo desta manutencao?\n\nVeiculo: ${editingMaintenance.vehiclePlate}\nKM: ${previousVehicleKmReference} -> ${nextVehicleKmReference}\nMotivo: ${nextEditReason}`
+      );
+
+      if (!confirmed) {
+        return;
+      }
+
+      setSaving(true);
+
+      const updatedAt = new Date().toISOString();
       const batch = writeBatch(db);
 
       batch.update(doc(db, "maintenances", editingMaintenance.id), {
         date: nextDate,
         odometerKm: nextOdometer,
         cost: nextCost,
-        type: editType,
-        workshopName: editWorkshopName || null,
-        notes: editNotes || null,
+        type: nextType,
+        workshopName: nextWorkshopName,
+        notes: nextNotes,
         endKm: editingMaintenance.status === "concluida" ? nextEndKm : null,
         updatedAt,
         updatedById: user.id,
         updatedByName: user.name,
-        editReason: editReason || null,
+        editReason: nextEditReason,
       });
 
       const vehicleUpdate: Record<string, unknown> = {};
       const vehicle = vehicles.find((item) => item.id === editingMaintenance.vehicleId);
-      if (editingMaintenance.status === "concluida" && nextEndKm != null) {
-        if ((vehicle?.currentKm ?? 0) < nextEndKm) {
-          vehicleUpdate.currentKm = nextEndKm;
-        }
-      } else if ((vehicle?.currentKm ?? 0) < nextOdometer) {
-        vehicleUpdate.currentKm = nextOdometer;
+      if ((vehicle?.currentKm ?? 0) < nextVehicleKmReference) {
+        vehicleUpdate.currentKm = nextVehicleKmReference;
+      } else if ((vehicle?.currentKm ?? null) === previousVehicleKmReference) {
+        vehicleUpdate.currentKm = nextVehicleKmReference;
       }
 
       if (Object.keys(vehicleUpdate).length > 0) {
@@ -664,14 +776,14 @@ export default function ManutencoesPage() {
                   date: nextDate,
                   odometerKm: nextOdometer,
                   cost: nextCost,
-                  type: editType,
-                  workshopName: editWorkshopName || null,
-                  notes: editNotes || null,
+                  type: nextType,
+                  workshopName: nextWorkshopName,
+                  notes: nextNotes,
                   endKm: editingMaintenance.status === "concluida" ? nextEndKm : null,
                   updatedAt,
                   updatedById: user.id,
                   updatedByName: user.name,
-                  editReason: editReason || null,
+                  editReason: nextEditReason,
                 }
               : item
           )
@@ -712,11 +824,9 @@ export default function ManutencoesPage() {
   );
 
   const storeFilterOptions = useMemo(() => {
-    const stores = new Set<string>();
-    maintenances.forEach((maintenance) => {
-      if (maintenance.storeId) stores.add(maintenance.storeId);
-    });
-    return Array.from(stores).sort();
+    return getCanonicalStoreOptions(
+      maintenances.map((maintenance) => maintenance.storeId)
+    );
   }, [maintenances]);
 
   const responsibleFilterOptions = useMemo(() => {
@@ -758,7 +868,10 @@ export default function ManutencoesPage() {
         return false;
       }
 
-      if (storeFilter !== "todas" && (m.storeId || "") !== storeFilter) {
+      if (
+        storeFilter !== "todas" &&
+        normalizeStoreKey(m.storeId) !== storeFilter
+      ) {
         return false;
       }
 
@@ -809,9 +922,29 @@ export default function ManutencoesPage() {
     [filteredMaintenances]
   );
 
+  const selectedVehicle = useMemo(
+    () => vehicles.find((vehicle) => vehicle.id === vehicleId) ?? null,
+    [vehicles, vehicleId]
+  );
+
+  const defaultDateRange = getCurrentMonthDateRange();
+  const hasActiveFilters =
+    searchFilter.trim().length > 0 ||
+    vehicleFilter !== "todos" ||
+    storeFilter !== "todas" ||
+    responsibleFilter !== "todos" ||
+    startFilter !== defaultDateRange.start ||
+    endFilter !== defaultDateRange.end;
+
+  const currentScopeLabel =
+    filteredMaintenances.length === maintenances.length
+      ? `${maintenances.length} manutencao(oes) no recorte padrao`
+      : `${filteredMaintenances.length} de ${maintenances.length} manutencao(oes) visiveis`;
+
   function handleClearFilter() {
-    setStartFilter("");
-    setEndFilter("");
+    const { start, end } = getCurrentMonthDateRange();
+    setStartFilter(start);
+    setEndFilter(end);
     setSearchFilter("");
     setVehicleFilter("todos");
     setStoreFilter("todas");
@@ -886,7 +1019,7 @@ export default function ManutencoesPage() {
       {errorMsg ? <StatusBanner tone="error">{errorMsg}</StatusBanner> : null}
       {successMsg ? <StatusBanner tone="success">{successMsg}</StatusBanner> : null}
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
         <MetricCard
           label="Registros"
           value={String(filteredMaintenances.length)}
@@ -935,6 +1068,10 @@ export default function ManutencoesPage() {
 
             <div className="flex flex-wrap gap-2">
               <span className="app-chip">
+                <span className="h-2 w-2 rounded-full bg-slate-300" />
+                {currentScopeLabel}
+              </span>
+              <span className="app-chip">
                 <span className="h-2 w-2 rounded-full bg-yellow-300" />
                 {filteredMaintenances.length} exibidas
               </span>
@@ -947,8 +1084,8 @@ export default function ManutencoesPage() {
         </div>
 
         <div className="space-y-4 p-4 md:p-5">
-          <div className="grid gap-3 xl:grid-cols-5">
-            <div className="relative xl:col-span-2">
+          <div className="grid gap-3 2xl:grid-cols-5">
+            <div className="relative 2xl:col-span-2">
               <Input
                 value={searchFilter}
                 onChange={(e) => setSearchFilter(e.target.value)}
@@ -978,8 +1115,8 @@ export default function ManutencoesPage() {
             >
               <option value="todas">Todas as lojas</option>
               {storeFilterOptions.map((store) => (
-                <option key={store} value={store}>
-                  {store}
+                <option key={store.key} value={store.key}>
+                  {store.label}
                 </option>
               ))}
             </select>
@@ -1022,9 +1159,11 @@ export default function ManutencoesPage() {
             </div>
 
             <div className="flex items-end">
-              <Button type="button" variant="outline" onClick={handleClearFilter}>
-                Limpar filtros
-              </Button>
+              {hasActiveFilters ? (
+                <Button type="button" variant="outline" onClick={handleClearFilter}>
+                  Limpar filtros
+                </Button>
+              ) : null}
             </div>
           </div>
 
@@ -1151,7 +1290,7 @@ export default function ManutencoesPage() {
 
             <form onSubmit={handleCriarManutencao} className="flex min-h-0 flex-1 flex-col">
               <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
                   <div>
                     <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                       Veiculo
@@ -1225,7 +1364,7 @@ export default function ManutencoesPage() {
                     />
                   </div>
 
-                  <div className="md:col-span-2 xl:col-span-3">
+                  <div className="md:col-span-2 2xl:col-span-3">
                     <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                       Observacoes
                     </label>
@@ -1235,6 +1374,40 @@ export default function ManutencoesPage() {
                       value={notes}
                       onChange={(e) => setNotes(e.target.value)}
                     />
+                  </div>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="app-panel-muted p-4">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                      Veiculo selecionado
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
+                      {selectedVehicle
+                        ? `${selectedVehicle.plate} · ${selectedVehicle.model}`
+                        : "Selecione um veiculo para abrir a ordem"}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      {selectedVehicle
+                        ? `${selectedVehicle.storeId || "Loja nao informada"} · ${getVehicleStatusLabel(selectedVehicle.status)}`
+                        : "O sistema ja sugere o KM salvo no cadastro quando ele estiver disponivel."}
+                    </p>
+                  </div>
+
+                  <div className="app-panel-muted p-4">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                      Leitura operacional
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-slate-950 dark:text-white">
+                      {selectedVehicle?.currentKm != null
+                        ? `${selectedVehicle.currentKm} km`
+                        : "KM nao informado"}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      {selectedVehicle
+                        ? `${getResponsibleCoverageCount(selectedVehicle)} responsavel(is) vinculado(s) a este veiculo.`
+                        : "A manutencao muda a disponibilidade do veiculo para evitar uso indevido na operacao."}
+                    </p>
                   </div>
                 </div>
 
@@ -1415,7 +1588,7 @@ export default function ManutencoesPage() {
                     </div>
                   </div>
 
-                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
                     <div>
                       <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                         Data e hora
@@ -1484,7 +1657,7 @@ export default function ManutencoesPage() {
                       />
                     </div>
 
-                    <div className="md:col-span-2 xl:col-span-3">
+                    <div className="md:col-span-2 2xl:col-span-3">
                       <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                         Observacoes
                       </label>
@@ -1496,16 +1669,19 @@ export default function ManutencoesPage() {
                       />
                     </div>
 
-                    <div className="md:col-span-2 xl:col-span-3">
+                    <div className="md:col-span-2 2xl:col-span-3">
                       <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                         Motivo da alteracao
                       </label>
                       <textarea
                         value={editReason}
                         onChange={(e) => setEditReason(e.target.value)}
-                        placeholder="Opcional: informe o motivo da edicao para auditoria interna."
+                        placeholder="Explique o motivo da alteracao para manter a auditoria da ordem."
                         className="app-textarea min-h-[90px]"
                       />
+                      <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                        Esse motivo passa a ser obrigatorio quando uma manutencao e ajustada.
+                      </p>
                     </div>
                   </div>
 
@@ -1681,32 +1857,56 @@ export default function ManutencoesPage() {
       )}
 
       {/* Lista Em andamento */}
-      <Card className="app-panel p-4 md:p-5">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold text-gray-100">
-            Em manutenção
-          </h2>
-          <p className="text-xs text-gray-400">
-            Total no período:{" "}
-            <span className="font-semibold text-yellow-400">
+      <Card className="app-panel gap-0 overflow-hidden py-0">
+        <div className="border-b border-border px-5 py-5">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-yellow-400/15 dark:bg-yellow-300/10">
+                <WrenchIcon className="h-5 w-5 text-yellow-600 dark:text-yellow-200" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+                  Manutencoes da frota
+                </h2>
+                <p className="text-sm text-slate-500 dark:text-slate-400">
+                  Ordens abertas e concluidas com custo, oficina e responsavel.
+                </p>
+              </div>
+            </div>
+
+            <span className="rounded-full border border-yellow-200 bg-yellow-50 px-3 py-1 text-xs font-semibold text-yellow-700 dark:border-yellow-400/20 dark:bg-yellow-400/10 dark:text-yellow-200">
               R$ {totalGasto.toFixed(2)}
             </span>
-          </p>
+          </div>
         </div>
 
+        <div className="space-y-5 p-4 md:p-5">
+        <div>
+        <h3 className="mb-3 text-base font-semibold text-slate-950 dark:text-white">
+          Em manutencao
+        </h3>
         {loading ? (
-          <p className="text-sm text-gray-400">Carregando...</p>
+          <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+            {Array.from({ length: 3 }).map((_, index) => (
+              <div
+                key={index}
+                className="app-skeleton-block h-36 rounded-[24px]"
+              />
+            ))}
+          </div>
         ) : filteredEmAndamento.length === 0 ? (
-          <p className="text-sm text-gray-400">
-            Nenhuma manutenção em andamento no período selecionado.
-          </p>
+          <div className="app-empty-state">
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+              Nenhuma manutencao em andamento no periodo selecionado.
+            </p>
+          </div>
         ) : (
           <>
             <div className="mb-4 space-y-3 md:hidden">
               {filteredEmAndamento.map((m) => (
                 <div
                   key={m.id}
-                  className="rounded-2xl border border-border bg-white/70 p-4 dark:border-white/10 dark:bg-white/[0.04]"
+                  className="app-list-card"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -1785,48 +1985,45 @@ export default function ManutencoesPage() {
               ))}
             </div>
 
-            <div className="mb-4 hidden overflow-x-auto md:block">
-            <table className="w-full text-sm border-collapse">
+            <div className="app-table-wrap mb-4 hidden md:block">
+            <table className="app-table">
               <thead>
-                <tr className="text-left border-b border-neutral-800 text-gray-400">
-                  <th className="py-2 pr-2">Data</th>
-                  <th className="py-2 px-2">Veículo</th>
-                  <th className="py-2 px-2">KM entrada</th>
-                  <th className="py-2 px-2">Tipo</th>
-                  <th className="py-2 px-2">Custo</th>
-                  <th className="py-2 px-2">Oficina</th>
-                  <th className="py-2 px-2">Responsável</th>
-                  <th className="py-2 pl-2 text-right">Ações</th>
+                <tr>
+                  <th>Data</th>
+                  <th>Veiculo</th>
+                  <th>KM entrada</th>
+                  <th>Tipo</th>
+                  <th>Custo</th>
+                  <th>Oficina</th>
+                  <th>Responsavel</th>
+                  <th className="text-right">Acoes</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredEmAndamento.map((m) => (
-                  <tr
-                    key={m.id}
-                    className="border-b border-neutral-900 hover:bg-neutral-800/60"
-                  >
-                    <td className="py-2 pr-2 text-gray-200">
+                  <tr key={m.id}>
+                    <td>
                       {m.date
                         ? new Date(m.date).toLocaleString("pt-BR")
                         : "-"}
                     </td>
-                    <td className="py-2 px-2 font-mono text-gray-100">
+                    <td className="font-mono font-semibold text-slate-900 dark:text-white">
                       {m.vehiclePlate} · {m.vehicleModel}
                     </td>
-                    <td className="py-2 px-2 text-gray-200">
+                    <td>
                       {m.odometerKm} km
                     </td>
-                    <td className="py-2 px-2 text-gray-200">{m.type}</td>
-                    <td className="py-2 px-2 text-yellow-300">
+                    <td>{m.type}</td>
+                    <td className="font-semibold text-yellow-700 dark:text-yellow-200">
                       R$ {m.cost.toFixed(2)}
                     </td>
-                    <td className="py-2 px-2 text-gray-200">
+                    <td>
                       {m.workshopName ? m.workshopName : "-"}
                     </td>
-                    <td className="py-2 px-2 text-gray-200">
+                    <td>
                       {m.responsibleUserName}
                     </td>
-                    <td className="py-2 pl-2 text-right">
+                    <td>
                       <div className="flex flex-wrap justify-end gap-2">
                         <ActionIconButton
                           action="complete"
@@ -1853,24 +2050,35 @@ export default function ManutencoesPage() {
             </div>
           </>
         )}
+        </div>
 
         {/* Lista Concluídas */}
-        <h2 className="text-lg font-semibold mb-3 text-gray-100">
-          Concluídas
-        </h2>
+        <div>
+        <h3 className="mb-3 border-t border-border pt-5 text-base font-semibold text-slate-950 dark:text-white">
+          Concluidas
+        </h3>
         {loading ? (
-          <p className="text-sm text-gray-400">Carregando...</p>
+          <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+            {Array.from({ length: 3 }).map((_, index) => (
+              <div
+                key={index}
+                className="app-skeleton-block h-36 rounded-[24px]"
+              />
+            ))}
+          </div>
         ) : filteredConcluidas.length === 0 ? (
-          <p className="text-sm text-gray-400">
-            Nenhuma manutenção concluída no período selecionado.
-          </p>
+          <div className="app-empty-state">
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+              Nenhuma manutencao concluida no periodo selecionado.
+            </p>
+          </div>
         ) : (
           <>
             <div className="space-y-3 md:hidden">
               {filteredConcluidas.map((m) => (
                 <div
                   key={m.id}
-                  className="rounded-2xl border border-border bg-white/70 p-4 dark:border-white/10 dark:bg-white/[0.04]"
+                  className="app-list-card"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -1943,51 +2151,48 @@ export default function ManutencoesPage() {
               ))}
             </div>
 
-            <div className="hidden overflow-x-auto md:block">
-            <table className="w-full text-sm border-collapse">
+            <div className="app-table-wrap hidden md:block">
+            <table className="app-table">
               <thead>
-                <tr className="text-left border-b border-neutral-800 text-gray-400">
-                  <th className="py-2 pr-2">Data</th>
-                  <th className="py-2 px-2">Veículo</th>
-                  <th className="py-2 px-2">KM entrada → saída</th>
-                  <th className="py-2 px-2">Tipo</th>
-                  <th className="py-2 px-2">Custo</th>
-                  <th className="py-2 px-2">Oficina</th>
-                  <th className="py-2 px-2">Responsável</th>
+                <tr>
+                  <th>Data</th>
+                  <th>Veiculo</th>
+                  <th>KM entrada / saida</th>
+                  <th>Tipo</th>
+                  <th>Custo</th>
+                  <th>Oficina</th>
+                  <th>Responsavel</th>
                   {isAdmin && (
-                    <th className="py-2 pl-2 text-right">Ações</th>
+                    <th className="text-right">Acoes</th>
                   )}
                 </tr>
               </thead>
               <tbody>
                 {filteredConcluidas.map((m) => (
-                  <tr
-                    key={m.id}
-                    className="border-b border-neutral-900 hover:bg-neutral-800/60"
-                  >
-                    <td className="py-2 pr-2 text-gray-200">
+                  <tr key={m.id}>
+                    <td>
                       {m.date
                         ? new Date(m.date).toLocaleString("pt-BR")
                         : "-"}
                     </td>
-                    <td className="py-2 px-2 font-mono text-gray-100">
+                    <td className="font-mono font-semibold text-slate-900 dark:text-white">
                       {m.vehiclePlate} · {m.vehicleModel}
                     </td>
-                    <td className="py-2 px-2 text-gray-200">
+                    <td>
                       {m.odometerKm} → {m.endKm ?? "-"} km
                     </td>
-                    <td className="py-2 px-2 text-gray-200">{m.type}</td>
-                    <td className="py-2 px-2 text-yellow-300">
+                    <td>{m.type}</td>
+                    <td className="font-semibold text-yellow-700 dark:text-yellow-200">
                       R$ {m.cost.toFixed(2)}
                     </td>
-                    <td className="py-2 px-2 text-gray-200">
+                    <td>
                       {m.workshopName ? m.workshopName : "-"}
                     </td>
-                    <td className="py-2 px-2 text-gray-200">
+                    <td>
                       {m.responsibleUserName}
                     </td>
                     {isAdmin && (
-                      <td className="py-2 pl-2 text-right">
+                      <td>
                         <div className="flex flex-wrap justify-end gap-2">
                           <ActionIconButton
                             action="edit"
@@ -2007,12 +2212,14 @@ export default function ManutencoesPage() {
             </div>
           </>
         )}
+        </div>
 
         {errorMsg && (
-          <p className="text-sm text-red-400 font-medium mt-3">
+          <p className="text-sm font-medium text-red-500 dark:text-red-300">
             {errorMsg}
           </p>
         )}
+        </div>
       </Card>
     </div>
   );

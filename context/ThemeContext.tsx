@@ -20,6 +20,14 @@ const STORAGE_KEY = "mm-frota-theme";
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
+function getStoredTheme(): ThemeMode {
+  if (typeof window === "undefined") {
+    return "dark";
+  }
+
+  return window.localStorage.getItem(STORAGE_KEY) === "light" ? "light" : "dark";
+}
+
 function applyTheme(theme: ThemeMode) {
   const root = document.documentElement;
 
@@ -33,32 +41,23 @@ function applyTheme(theme: ThemeMode) {
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<ThemeMode>("dark");
+  const [theme, setThemeState] = useState<ThemeMode>(() => getStoredTheme());
 
   useEffect(() => {
-    const savedTheme =
-      typeof window !== "undefined"
-        ? (window.localStorage.getItem(STORAGE_KEY) as ThemeMode | null)
-        : null;
-
-    const initialTheme = savedTheme === "light" ? "light" : "dark";
-    setThemeState(initialTheme);
-    applyTheme(initialTheme);
-  }, []);
+    applyTheme(theme);
+    window.localStorage.setItem(STORAGE_KEY, theme);
+  }, [theme]);
 
   const value = useMemo<ThemeContextValue>(
     () => ({
       theme,
       setTheme: (nextTheme) => {
         setThemeState(nextTheme);
-        applyTheme(nextTheme);
-        window.localStorage.setItem(STORAGE_KEY, nextTheme);
       },
       toggleTheme: () => {
-        const nextTheme = theme === "light" ? "dark" : "light";
-        setThemeState(nextTheme);
-        applyTheme(nextTheme);
-        window.localStorage.setItem(STORAGE_KEY, nextTheme);
+        setThemeState((currentTheme) =>
+          currentTheme === "light" ? "dark" : "light"
+        );
       },
     }),
     [theme]

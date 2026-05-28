@@ -1,39 +1,118 @@
-﻿"use client";
+"use client";
 
-import { useEffect, useState } from "react";
-import { useAuth } from "@/context/AuthContext";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { db, secondaryAuth } from "@/lib/firebase";
-import {
-  collection,
-  getDocs,
-  doc,
-  setDoc,
-  updateDoc,
-  deleteDoc,
-} from "firebase/firestore";
 import {
   createUserWithEmailAndPassword,
-  UserCredential,
+  type UserCredential,
 } from "firebase/auth";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  updateDoc,
+  writeBatch,
+} from "firebase/firestore";
+import {
+  Building2,
+  KeyRound,
+  Search,
+  ShieldCheck,
+  UserCog,
+  UserRoundPlus,
+  Users2,
+  UserX,
+} from "lucide-react";
+
 import { ActionIconButton } from "@/components/ui/action-icon-button";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
+import { MetricCard } from "@/components/layout/MetricCard";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { PageLoadingState } from "@/components/layout/PageLoadingState";
 import { StatusBanner } from "@/components/layout/StatusBanner";
-import { ShieldCheck } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { useAuth } from "@/context/AuthContext";
+import { db, secondaryAuth } from "@/lib/firebase";
+import {
+  getCanonicalStoreOptions,
+  normalizeStoreKey,
+} from "@/lib/store-utils";
+
+type UserRole = "admin" | "user";
+type RoleFilter = "todos" | UserRole;
+type StatusFilter = "todos" | "ativos" | "inativos";
 
 interface AppUser {
   id: string;
   name: string;
-  email?: string;
-  role: "admin" | "user";
+  email: string;
+  role: UserRole;
   storeId: string;
-  username?: string;
-  active?: boolean;
-  mustChangePassword?: boolean;
+  username: string;
+  active: boolean;
+  mustChangePassword: boolean;
+}
+
+interface AccessNotice {
+  name: string;
+  username: string;
+  tempPassword: string;
+}
+
+function normalizeUsername(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function generateTempPassword() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@";
+  let password = "";
+
+  for (let index = 0; index < 10; index += 1) {
+    password += chars[Math.floor(Math.random() * chars.length)];
+  }
+
+  return password;
+}
+
+function sortUsers(list: AppUser[]) {
+  return [...list].sort((a, b) => {
+    if (a.active !== b.active) {
+      return Number(b.active) - Number(a.active);
+    }
+
+    if (a.role !== b.role) {
+      return a.role === "admin" ? -1 : 1;
+    }
+
+    return a.name.localeCompare(b.name, "pt-BR");
+  });
+}
+
+function getRoleLabel(role: UserRole) {
+  return role === "admin" ? "Administrador" : "Responsavel";
+}
+
+function getErrorCode(error: unknown) {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof (error as { code?: unknown }).code === "string"
+  ) {
+    return (error as { code: string }).code;
+  }
+
+  return null;
 }
 
 export default function UsuariosPage() {
@@ -42,529 +121,1104 @@ export default function UsuariosPage() {
 
   const [usersList, setUsersList] = useState<AppUser[]>([]);
   const [loading, setLoading] = useState(true);
-
-  // Controle do formulário (criação / edição)
-  const [formOpen, setFormOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [errorMsg, setErrorMsg] = useState("");
-  const [successMsg, setSuccessMsg] = useState("");
+  const [togglingUserId, setTogglingUserId] = useState<string | null>(null);
 
-  // "null" = criando novo; diferente de null = editando
+  const [formOpen, setFormOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<AppUser | null>(null);
 
-  // campos do formulário
-  const [nome, setNome] = useState("");
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
   const [storeId, setStoreId] = useState("");
-  const [role, setRole] = useState<"admin" | "user">("user");
-  const [tempPassword, setTempPassword] = useState("");
+  const [role, setRole] = useState<UserRole>("user");
+  const [mustChangePassword, setMustChangePassword] = useState(true);
 
-  // Apenas admin pode acessar
+  const [searchTerm, setSearchTerm] = useState("");
+  const [roleFilter, setRoleFilter] = useState<RoleFilter>("todos");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("todos");
+  const [storeFilter, setStoreFilter] = useState("todas");
+
+  const [errorMsg, setErrorMsg] = useState("");
+  const [successMsg, setSuccessMsg] = useState("");
+  const [accessNotice, setAccessNotice] = useState<AccessNotice | null>(null);
+
   useEffect(() => {
     if (!user) return;
-    if (user.role !== "admin") {
-      router.replace("/dashboard");
-    }
-  }, [user, router]);
 
-  // Carregar usuários
+    if (user.role !== "admin") {
+      router.replace("/rotas");
+    }
+  }, [router, user]);
+
   useEffect(() => {
+    let mounted = true;
+
     async function loadUsers() {
+      if (!user || user.role !== "admin") return;
+
       try {
         setLoading(true);
+        setErrorMsg("");
+
         const snap = await getDocs(collection(db, "users"));
-        const list: AppUser[] = snap.docs.map((d) => {
-          const data = d.data() as any;
+
+        if (!mounted) return;
+
+        const nextUsers = snap.docs.map((snapshot) => {
+          const data = snapshot.data();
+
           return {
-            id: d.id,
-            name: data.name,
-            email: data.email,
-            role: data.role,
-            storeId: data.storeId,
-            username: data.username,
-            active: data.active ?? true,
-            mustChangePassword: data.mustChangePassword,
-          };
+            id: snapshot.id,
+            name: typeof data.name === "string" ? data.name : "Usuario MM",
+            email: typeof data.email === "string" ? data.email : "",
+            role: data.role === "admin" ? "admin" : "user",
+            storeId: typeof data.storeId === "string" ? data.storeId : "",
+            username: typeof data.username === "string" ? data.username : "",
+            active: data.active !== false,
+            mustChangePassword: Boolean(data.mustChangePassword),
+          } satisfies AppUser;
         });
-        setUsersList(list);
-      } catch (err) {
-        console.error("Erro ao carregar usuários:", err);
-        setErrorMsg("Erro ao carregar usuários. Tente novamente.");
+
+        setUsersList(sortUsers(nextUsers));
+      } catch (error) {
+        console.error("Erro ao carregar usuarios:", error);
+        setErrorMsg("Nao foi possivel carregar os acessos. Tente novamente.");
       } finally {
-        setLoading(false);
+        if (mounted) {
+          setLoading(false);
+        }
       }
     }
 
-    if (user && user.role === "admin") {
-      loadUsers();
-    }
+    void loadUsers();
+
+    return () => {
+      mounted = false;
+    };
   }, [user]);
 
-  function gerarSenhaTemporaria() {
-    const chars =
-      "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-    let s = "";
-    for (let i = 0; i < 8; i++) {
-      s += chars[Math.floor(Math.random() * chars.length)];
-    }
-    return s;
-  }
+  const totalUsers = usersList.length;
+  const activeUsers = usersList.filter((item) => item.active).length;
+  const adminUsers = usersList.filter((item) => item.role === "admin").length;
+  const passwordPendingUsers = usersList.filter(
+    (item) => item.mustChangePassword
+  ).length;
 
-  function resetForm() {
-    setNome("");
+  const storeOptions = useMemo(
+    () => getCanonicalStoreOptions(usersList.map((item) => item.storeId)),
+    [usersList]
+  );
+
+  const filteredUsers = useMemo(() => {
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+
+    return usersList.filter((item) => {
+      const matchesSearch =
+        !normalizedSearch ||
+        item.name.toLowerCase().includes(normalizedSearch) ||
+        item.username.toLowerCase().includes(normalizedSearch) ||
+        item.email.toLowerCase().includes(normalizedSearch) ||
+        item.storeId.toLowerCase().includes(normalizedSearch);
+
+      const matchesRole = roleFilter === "todos" || item.role === roleFilter;
+      const matchesStatus =
+        statusFilter === "todos" ||
+        (statusFilter === "ativos" && item.active) ||
+        (statusFilter === "inativos" && !item.active);
+      const matchesStore =
+        storeFilter === "todas" ||
+        normalizeStoreKey(item.storeId) === storeFilter;
+
+      return matchesSearch && matchesRole && matchesStatus && matchesStore;
+    });
+  }, [roleFilter, searchTerm, statusFilter, storeFilter, usersList]);
+
+  const isEditMode = Boolean(editingUser);
+  const filtersApplied =
+    searchTerm.trim() !== "" ||
+    roleFilter !== "todos" ||
+    statusFilter !== "todos" ||
+    storeFilter !== "todas";
+
+  function resetFormFields() {
+    setEditingUser(null);
+    setName("");
     setEmail("");
     setUsername("");
-    setStoreId("");
+    setStoreId(user?.storeId ?? "");
     setRole("user");
-    setTempPassword("");
+    setMustChangePassword(true);
     setErrorMsg("");
-    setSuccessMsg("");
-    setEditingUser(null);
   }
 
-  async function handleCriarUsuario() {
+  function openCreateForm() {
+    setSuccessMsg("");
+    setErrorMsg("");
+    resetFormFields();
+    setFormOpen(true);
+  }
+
+  function openEditForm(selectedUser: AppUser) {
+    setSuccessMsg("");
+    setErrorMsg("");
+    setEditingUser(selectedUser);
+    setName(selectedUser.name);
+    setEmail(selectedUser.email);
+    setUsername(selectedUser.username);
+    setStoreId(selectedUser.storeId);
+    setRole(selectedUser.role);
+    setMustChangePassword(selectedUser.mustChangePassword);
+    setFormOpen(true);
+  }
+
+  function closeForm() {
+    setFormOpen(false);
+    resetFormFields();
+  }
+
+  function clearFilters() {
+    setSearchTerm("");
+    setRoleFilter("todos");
+    setStatusFilter("todos");
+    setStoreFilter("todas");
+  }
+
+  async function isUsernameAvailable(
+    normalizedUsername: string,
+    currentUserId?: string
+  ) {
+    const usernameSnap = await getDoc(doc(db, "usernames", normalizedUsername));
+
+    if (!usernameSnap.exists()) {
+      return true;
+    }
+
+    const usernameData = usernameSnap.data();
+    return currentUserId
+      ? usernameData.userId === currentUserId
+      : false;
+  }
+
+  async function handleCreateUser() {
+    let createdCredential: UserCredential | null = null;
+
     try {
+      setSaving(true);
       setErrorMsg("");
       setSuccessMsg("");
-      setSaving(true);
 
-      if (!nome || !email || !username || !storeId) {
-        setErrorMsg("Preencha todos os campos.");
+      const trimmedName = name.trim();
+      const trimmedEmail = email.trim().toLowerCase();
+      const trimmedStoreId = storeId.trim();
+      const normalizedUsername = normalizeUsername(username);
+
+      if (!trimmedName || !trimmedEmail || !trimmedStoreId || !normalizedUsername) {
+        setErrorMsg("Preencha nome, email, usuario e loja.");
         return;
       }
 
-      if (!email.includes("@")) {
-        setErrorMsg("Digite um email válido.");
+      if (!trimmedEmail.includes("@")) {
+        setErrorMsg("Informe um email valido.");
         return;
       }
 
-      // gerar senha temporária
-      const generatedPass = gerarSenhaTemporaria();
-      setTempPassword(generatedPass);
-
-      // 1) Criar usuário no Auth usando o secondaryAuth
-      let cred: UserCredential;
-      try {
-        cred = await createUserWithEmailAndPassword(
-          secondaryAuth,
-          email,
-          generatedPass
-        );
-      } catch (error: any) {
-        console.error("Erro ao criar usuário no Auth:", error);
-        if (error.code === "auth/email-already-in-use") {
-          setErrorMsg("Este email já est? em uso no Auth.");
-        } else {
-          setErrorMsg(
-            "Erro ao criar usuário no Auth. Verifique o email ou tente novamente."
-          );
-        }
+      if (normalizedUsername.length < 3) {
+        setErrorMsg("O nome de usuario deve ter pelo menos 3 caracteres.");
         return;
       }
 
-      const uid = cred.user.uid;
+      if (
+        usersList.some(
+          (item) => item.email.toLowerCase() === trimmedEmail.toLowerCase()
+        )
+      ) {
+        setErrorMsg("Ja existe um acesso cadastrado com este email.");
+        return;
+      }
 
-      // 2) Criar doc em "users"
-      await setDoc(doc(db, "users", uid), {
-        name: nome,
-        email,
+      if (
+        usersList.some((item) => item.username.toLowerCase() === normalizedUsername)
+      ) {
+        setErrorMsg("Este nome de usuario ja esta em uso.");
+        return;
+      }
+
+      const usernameAvailable = await isUsernameAvailable(normalizedUsername);
+
+      if (!usernameAvailable) {
+        setErrorMsg("Este nome de usuario ja esta em uso.");
+        return;
+      }
+
+      const generatedPassword = generateTempPassword();
+
+      createdCredential = await createUserWithEmailAndPassword(
+        secondaryAuth,
+        trimmedEmail,
+        generatedPassword
+      );
+
+      const userRef = doc(db, "users", createdCredential.user.uid);
+      const usernameRef = doc(db, "usernames", normalizedUsername);
+      const batch = writeBatch(db);
+
+      batch.set(userRef, {
+        name: trimmedName,
+        email: trimmedEmail,
         role,
-        storeId,
-        username,
+        storeId: trimmedStoreId,
+        username: normalizedUsername,
         active: true,
         mustChangePassword: true,
       });
-
-      // 3) Criar doc em "usernames"
-      await setDoc(doc(db, "usernames", username), {
-        email,
-        userId: uid,
+      batch.set(usernameRef, {
+        email: trimmedEmail,
+        userId: createdCredential.user.uid,
       });
 
-      // Atualizar lista local
-      setUsersList((prev) => [
-        ...prev,
-        {
-          id: uid,
-          name: nome,
-          email,
-          role,
-          storeId,
-          username,
-          active: true,
-          mustChangePassword: true,
-        },
-      ]);
+      await batch.commit();
 
-      setSuccessMsg(
-        `Usuário criado com sucesso! Senha temporária: ${generatedPass}`
-      );
-      // Mantém o form aberto para você copiar a senha
-    } catch (error: any) {
-      console.error("Erro geral ao criar usuário:", error);
-      setErrorMsg("Erro ao criar usuário. Tente novamente.");
+      const createdUser = {
+        id: createdCredential.user.uid,
+        name: trimmedName,
+        email: trimmedEmail,
+        role,
+        storeId: trimmedStoreId,
+        username: normalizedUsername,
+        active: true,
+        mustChangePassword: true,
+      } satisfies AppUser;
+
+      setUsersList((previous) => sortUsers([...previous, createdUser]));
+      setAccessNotice({
+        name: trimmedName,
+        username: normalizedUsername,
+        tempPassword: generatedPassword,
+      });
+      setSuccessMsg("Acesso criado com sucesso.");
+      closeForm();
+    } catch (error) {
+      console.error("Erro ao criar usuario:", error);
+
+      const errorCode = getErrorCode(error);
+
+      if (createdCredential) {
+        setErrorMsg(
+          "O usuario foi criado na autenticacao, mas houve falha ao concluir o cadastro. Revise este acesso antes de tentar novamente."
+        );
+      } else if (errorCode === "auth/email-already-in-use") {
+        setErrorMsg("Este email ja esta em uso na autenticacao.");
+      } else {
+        setErrorMsg("Nao foi possivel criar o usuario. Tente novamente.");
+      }
     } finally {
       setSaving(false);
     }
   }
 
-  async function handleAtualizarUsuario() {
-    if (!editingUser) return;
+  async function handleUpdateUser() {
+    if (!editingUser || !user) return;
 
     try {
+      setSaving(true);
       setErrorMsg("");
       setSuccessMsg("");
-      setSaving(true);
 
-      if (!nome || !username || !storeId) {
-        setErrorMsg("Preencha nome, username e loja.");
+      const trimmedName = name.trim();
+      const trimmedStoreId = storeId.trim();
+      const normalizedUsername = normalizeUsername(username);
+
+      if (!trimmedName || !trimmedStoreId || !normalizedUsername) {
+        setErrorMsg("Preencha nome, usuario e loja.");
         return;
       }
 
-      // 1) Atualizar documento do usuário
-      await updateDoc(doc(db, "users", editingUser.id), {
-        name: nome,
-        storeId,
+      if (normalizedUsername.length < 3) {
+        setErrorMsg("O nome de usuario deve ter pelo menos 3 caracteres.");
+        return;
+      }
+
+      if (
+        editingUser.id === user.id &&
+        editingUser.role !== role
+      ) {
+        setErrorMsg(
+          "Para evitar perda de acesso, altere o papel da sua propria conta com outro administrador."
+        );
+        return;
+      }
+
+      const usernameChanged =
+        editingUser.username.toLowerCase() !== normalizedUsername;
+
+      if (
+        usersList.some(
+          (item) =>
+            item.id !== editingUser.id &&
+            item.username.toLowerCase() === normalizedUsername
+        )
+      ) {
+        setErrorMsg("Este nome de usuario ja esta em uso.");
+        return;
+      }
+
+      if (usernameChanged) {
+        const usernameAvailable = await isUsernameAvailable(
+          normalizedUsername,
+          editingUser.id
+        );
+
+        if (!usernameAvailable) {
+          setErrorMsg("Este nome de usuario ja esta em uso.");
+          return;
+        }
+      }
+
+      const userRef = doc(db, "users", editingUser.id);
+      const batch = writeBatch(db);
+
+      batch.update(userRef, {
+        name: trimmedName,
+        storeId: trimmedStoreId,
         role,
-        username,
+        username: normalizedUsername,
+        mustChangePassword,
       });
 
-      // 2) Se o username mudou, atualizar colecao "usernames"
-      if (editingUser.username && editingUser.username !== username) {
-        // cria novo doc com mesmo email
-        await setDoc(doc(db, "usernames", username), {
+      if (usernameChanged) {
+        batch.set(doc(db, "usernames", normalizedUsername), {
           email: editingUser.email,
           userId: editingUser.id,
         });
-
-        // remove o antigo username
-        await deleteDoc(doc(db, "usernames", editingUser.username));
+        batch.delete(doc(db, "usernames", editingUser.username));
       }
 
-      // Atualiza lista local
-      setUsersList((prev) =>
-        prev.map((u) =>
-          u.id === editingUser.id
-            ? {
-                ...u,
-                name: nome,
-                storeId,
-                role,
-                username,
-              }
-            : u
+      await batch.commit();
+
+      setUsersList((previous) =>
+        sortUsers(
+          previous.map((item) =>
+            item.id === editingUser.id
+              ? {
+                  ...item,
+                  name: trimmedName,
+                  storeId: trimmedStoreId,
+                  role,
+                  username: normalizedUsername,
+                  mustChangePassword,
+                }
+              : item
+          )
         )
       );
 
-      setSuccessMsg("Usuário atualizado com sucesso!");
-      setFormOpen(false);
-      setEditingUser(null);
+      setSuccessMsg("Acesso atualizado com sucesso.");
+      closeForm();
     } catch (error) {
-      console.error("Erro ao atualizar usuário:", error);
-      setErrorMsg("Erro ao atualizar usuário. Tente novamente.");
+      console.error("Erro ao atualizar usuario:", error);
+      setErrorMsg("Nao foi possivel atualizar o acesso. Tente novamente.");
     } finally {
       setSaving(false);
     }
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (editingUser) {
-      await handleAtualizarUsuario();
-    } else {
-      await handleCriarUsuario();
-    }
-  }
+  async function handleToggleActive(selectedUser: AppUser) {
+    if (!user) return;
 
-  async function handleToggleAtivo(u: AppUser) {
+    if (selectedUser.id === user.id) {
+      setErrorMsg("Voce nao pode inativar o seu proprio acesso.");
+      return;
+    }
+
     try {
-      const novoStatus = !u.active;
-      await updateDoc(doc(db, "users", u.id), {
-        active: novoStatus,
+      setTogglingUserId(selectedUser.id);
+      setErrorMsg("");
+      setSuccessMsg("");
+
+      const nextStatus = !selectedUser.active;
+
+      await updateDoc(doc(db, "users", selectedUser.id), {
+        active: nextStatus,
       });
-      setUsersList((prev) =>
-        prev.map((item) =>
-          item.id === u.id ? { ...item, active: novoStatus } : item
+
+      setUsersList((previous) =>
+        sortUsers(
+          previous.map((item) =>
+            item.id === selectedUser.id ? { ...item, active: nextStatus } : item
+          )
         )
       );
+
+      setSuccessMsg(
+        nextStatus
+          ? "Acesso reativado com sucesso."
+          : "Acesso inativado com sucesso."
+      );
     } catch (error) {
-      console.error("Erro ao atualizar status:", error);
-      setErrorMsg("Erro ao atualizar status do usuário.");
+      console.error("Erro ao alterar status do usuario:", error);
+      setErrorMsg("Nao foi possivel alterar o status do usuario.");
+    } finally {
+      setTogglingUserId(null);
     }
   }
 
-  function abrirFormNovo() {
-    resetForm();
-    setFormOpen(true);
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (editingUser) {
+      await handleUpdateUser();
+      return;
+    }
+
+    await handleCreateUser();
   }
 
-  function abrirFormEdicao(u: AppUser) {
-    setEditingUser(u);
-    setNome(u.name);
-    setEmail(u.email ?? "");
-    setUsername(u.username ?? "");
-    setStoreId(u.storeId);
-    setRole(u.role);
-    setTempPassword("");
-    setErrorMsg("");
-    setSuccessMsg("");
-    setFormOpen(true);
-  }
-
-  if (!user || user.role !== "admin") {
+  if (!user) {
     return (
-      <div className="p-6">
-        <p className="text-red-400">
-          Acesso restrito. Apenas administradores podem gerenciar usuários.
-        </p>
+      <div className="app-shell px-4 py-6 md:px-6">
+        <PageLoadingState
+          title="Carregando administracao"
+          description="Estamos organizando os acessos para voce continuar com seguranca."
+          compact
+        />
       </div>
     );
   }
 
-  const isEditMode = !!editingUser;
+  if (user.role !== "admin") {
+    return (
+      <div className="app-page">
+        <StatusBanner tone="error">
+          Acesso restrito. Apenas administradores podem gerenciar usuarios.
+        </StatusBanner>
+      </div>
+    );
+  }
 
   return (
     <div className="app-page">
       <PageHeader
-        eyebrow="Administracao"
-        title="Gestao de usuarios"
-        description="Cadastre e mantenha os acessos do Grupo MM de forma simples e organizada."
+        eyebrow="Governanca de acesso"
+        title="Administracao de usuarios"
+        description="Acessos, perfis e lojas em uma operacao mais limpa e controlada."
         icon={ShieldCheck}
         badges={
-          <span className="app-chip">
-            <span className="h-2 w-2 rounded-full bg-amber-400" />
-            {usersList.length} usuarios
-          </span>
+          <>
+            <span className="app-chip">
+              <Users2 className="h-3.5 w-3.5" />
+              {totalUsers} acessos
+            </span>
+            <span className="app-chip">
+              <Building2 className="h-3.5 w-3.5" />
+              {storeOptions.length} lojas
+            </span>
+            <span className="app-chip">
+              <KeyRound className="h-3.5 w-3.5" />
+              {passwordPendingUsers} troca(s) pendente(s)
+            </span>
+          </>
         }
-        actions={<Button onClick={abrirFormNovo}>+ Novo usuario</Button>}
+        actions={
+          <Button onClick={openCreateForm}>
+            <UserRoundPlus className="h-4 w-4" />
+            Novo acesso
+          </Button>
+        }
       />
 
-      {errorMsg ? <StatusBanner tone="error">{errorMsg}</StatusBanner> : null}
-      {successMsg ? <StatusBanner tone="success">{successMsg}</StatusBanner> : null}
-
-      <div className="hidden items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-yellow-400">
-            Gestão de Usuários
-          </h1>
-          <p className="text-sm text-gray-400">
-            Administre os responsáveis pelos veículos, rotas e gastos do Grupo MM.
-          </p>
-        </div>
-
-        <Button
-          className="bg-yellow-500 hover:bg-yellow-400 text-black font-semibold"
-          onClick={abrirFormNovo}
-        >
-          + Novo usuário
-        </Button>
-      </div>
-
-      {/* Formulário (criação / edição) */}
-      {formOpen && (
-        <Card className="app-panel p-4 md:p-5">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-lg font-semibold text-yellow-400">
-              {isEditMode ? "Editar usuário" : "Novo usuário"}
-            </h2>
-            {isEditMode && (
-              <span className="text-[11px] px-2 py-[2px] rounded-full bg-neutral-800 border border-neutral-700 text-gray-300">
-                ID: {editingUser?.id}
-              </span>
-            )}
-          </div>
-
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Input
-                placeholder="Nome completo"
-                value={nome}
-                onChange={(e) => setNome(e.target.value)}
-                className="app-field"
-              />
-
-              <Input
-                placeholder="Email (Auth)"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                disabled={isEditMode} // não mexe no email do Auth por aqui
-                className={`app-field ${
-                  isEditMode ? "opacity-60 cursor-not-allowed" : ""
-                }`}
-              />
-
-              <Input
-                placeholder="Username (para login)"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="app-field"
-              />
-
-              <Input
-                placeholder="Loja / unidade (ex: destack-cedral)"
-                value={storeId}
-                onChange={(e) => setStoreId(e.target.value)}
-                className="app-field"
-              />
-
-              <div>
-                <label className="text-xs text-gray-400 block mb-1">
-                  Papel
-                </label>
-                <select
-                  className="app-select"
-                  value={role}
-                  onChange={(e) =>
-                    setRole(e.target.value as "admin" | "user")
-                  }
-                >
-                  <option value="user">User (Responsável de veículo)</option>
-                  <option value="admin">Admin (Controle total)</option>
-                </select>
-              </div>
+      {accessNotice ? (
+        <Card className="app-toolbar-shell gap-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="space-y-2">
+              <p className="app-kicker">Credencial criada</p>
+              <h2 className="text-xl font-semibold text-slate-950 dark:text-white">
+                Senha temporaria pronta para entrega
+              </h2>
+              <p className="max-w-3xl text-sm leading-6 text-slate-500 dark:text-slate-400">
+                O primeiro acesso continua exigindo troca imediata de senha.
+              </p>
             </div>
 
-            {!isEditMode && (
-              <p className="text-xs text-gray-400">
-                Ao salvar, sera gerada uma{" "}
-                <span className="text-yellow-300 font-semibold">
-                  senha temporária
-                </span>{" "}
-                para o usuário acessar pela primeira vez.
-              </p>
-            )}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setAccessNotice(null)}
+            >
+              Fechar aviso
+            </Button>
+          </div>
 
-            {tempPassword && !isEditMode && (
-              <p className="text-xs text-amber-600 dark:text-amber-300">
-                Senha temporária gerada:{" "}
-                <span className="font-mono font-bold">
-                  {tempPassword}
-                </span>{" "}
-                (anote e entregue ao usuário).
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            <div className="app-inline-stat">
+              <p className="app-inline-stat-label">
+                Usuario
               </p>
-            )}
+              <p className="app-inline-stat-value text-base">
+                {accessNotice.name}
+              </p>
+            </div>
 
-            <div className="flex items-center gap-2 pt-2">
-              <Button
-                type="submit"
-                disabled={saving}
-                className="font-semibold"
-              >
+            <div className="app-inline-stat">
+              <p className="app-inline-stat-label">
+                Login
+              </p>
+              <p className="app-inline-stat-value font-mono text-base">
+                {accessNotice.username}
+              </p>
+            </div>
+
+            <div className="app-inline-stat">
+              <p className="app-inline-stat-label">
+                Senha temporaria
+              </p>
+              <p className="app-inline-stat-value font-mono text-base text-blue-700 dark:text-yellow-200">
+                {accessNotice.tempPassword}
+              </p>
+            </div>
+          </div>
+        </Card>
+      ) : null}
+
+      {successMsg ? <StatusBanner tone="success">{successMsg}</StatusBanner> : null}
+      {!formOpen && errorMsg ? (
+        <StatusBanner tone="error">{errorMsg}</StatusBanner>
+      ) : null}
+
+      <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
+        <MetricCard
+          label="Acessos ativos"
+          value={String(activeUsers)}
+          helper="Usuarios aptos para operar."
+          icon={Users2}
+          accent="green"
+          size="hero"
+          className="min-h-[176px]"
+        />
+        <MetricCard
+          label="Administradores"
+          value={String(adminUsers)}
+          helper="Controle total do ambiente."
+          icon={ShieldCheck}
+          accent="blue"
+          size="hero"
+          className="min-h-[176px]"
+        />
+        <MetricCard
+          label="Troca de senha"
+          value={String(passwordPendingUsers)}
+          helper="Primeiro acesso ainda pendente."
+          icon={KeyRound}
+          accent="yellow"
+          className="min-h-[168px]"
+        />
+        <MetricCard
+          label="Contas inativas"
+          value={String(totalUsers - activeUsers)}
+          helper="Acessos pausados no sistema."
+          icon={UserX}
+          accent="red"
+          className="min-h-[168px]"
+        />
+      </div>
+
+      <Card className="app-toolbar-shell gap-4">
+        <div className="app-toolbar-head">
+          <div className="space-y-1.5">
+            <p className="app-kicker">Busca e filtros</p>
+            <h2 className="app-toolbar-title">Localize acessos com rapidez</h2>
+            <p className="app-toolbar-copy">
+              Pesquise por nome, usuario, loja ou perfil.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <span className="app-chip">{filteredUsers.length} em tela</span>
+            <span className="app-chip">{activeUsers} ativos</span>
+            <span className="app-chip">{storeOptions.length} lojas</span>
+          </div>
+        </div>
+
+        <div className="grid gap-3 2xl:grid-cols-[minmax(0,1.5fr)_repeat(3,minmax(0,1fr))]">
+          <div>
+            <label className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+              Buscar acesso
+            </label>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <Input
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Busque por nome, usuario, email ou loja"
+                className="app-field pl-10"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+              Perfil
+            </label>
+            <select
+              className="app-select"
+              value={roleFilter}
+              onChange={(event) => setRoleFilter(event.target.value as RoleFilter)}
+            >
+              <option value="todos">Todos os perfis</option>
+              <option value="admin">Administradores</option>
+              <option value="user">Responsaveis</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+              Status
+            </label>
+            <select
+              className="app-select"
+              value={statusFilter}
+              onChange={(event) =>
+                setStatusFilter(event.target.value as StatusFilter)
+              }
+            >
+              <option value="todos">Todos os status</option>
+              <option value="ativos">Ativos</option>
+              <option value="inativos">Inativos</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+              Loja
+            </label>
+            <select
+              className="app-select"
+              value={storeFilter}
+              onChange={(event) => setStoreFilter(event.target.value)}
+            >
+              <option value="todas">Todas as lojas</option>
+              {storeOptions.map((storeOption) => (
+                <option key={storeOption.key} value={storeOption.key}>
+                  {storeOption.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3 border-t border-border pt-4 md:flex-row md:items-center md:justify-between">
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            {loading
+              ? "Buscando acessos..."
+              : `${filteredUsers.length} acesso(s) exibido(s) nesta visao.`}
+          </p>
+
+          <Button
+            type="button"
+            variant="outline"
+            onClick={clearFilters}
+            disabled={!filtersApplied}
+          >
+            Limpar filtros
+          </Button>
+        </div>
+      </Card>
+
+      <Card className="app-panel p-4 md:p-5">
+        <div className="flex flex-col gap-3 border-b border-border pb-4 md:flex-row md:items-center md:justify-between">
+          <div className="space-y-1">
+            <p className="app-kicker">Base de acessos</p>
+            <h2 className="text-lg font-semibold text-slate-950 dark:text-white">
+              Usuarios cadastrados
+            </h2>
+          </div>
+
+          <span className="app-chip">{filteredUsers.length} registro(s)</span>
+        </div>
+
+        {loading ? (
+          <div className="pt-4">
+            <PageLoadingState
+              title="Carregando usuarios"
+              description="Estamos organizando os acessos cadastrados para voce continuar sem repetir a acao."
+              compact
+            />
+          </div>
+        ) : filteredUsers.length === 0 ? (
+          <div className="app-empty-state mt-4">
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+              Nenhum acesso encontrado com os filtros atuais.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="space-y-3 pt-4 md:hidden">
+              {filteredUsers.map((item) => (
+                <div
+                  key={item.id}
+                  className="app-list-card"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-slate-950 dark:text-white">
+                        {item.name}
+                      </p>
+                      <p className="mt-1 font-mono text-xs text-slate-500 dark:text-slate-400">
+                        {item.username}
+                      </p>
+                    </div>
+
+                    <span
+                      className={
+                        item.active
+                          ? "rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-500/10 dark:text-emerald-200"
+                          : "rounded-full border border-red-200 bg-red-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-red-700 dark:border-red-400/20 dark:bg-red-500/10 dark:text-red-200"
+                      }
+                    >
+                      {item.active ? "Ativo" : "Inativo"}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
+                    <div className="app-panel-muted p-3">
+                      <p className="text-slate-500 dark:text-slate-400">Perfil</p>
+                      <p className="mt-1 font-medium text-slate-900 dark:text-white">
+                        {getRoleLabel(item.role)}
+                      </p>
+                    </div>
+                    <div className="app-panel-muted p-3">
+                      <p className="text-slate-500 dark:text-slate-400">Loja</p>
+                      <p className="mt-1 font-medium text-slate-900 dark:text-white">
+                        {item.storeId}
+                      </p>
+                    </div>
+                    <div className="app-panel-muted p-3">
+                      <p className="text-slate-500 dark:text-slate-400">Email</p>
+                      <p className="mt-1 break-all font-medium text-slate-900 dark:text-white">
+                        {item.email || "-"}
+                      </p>
+                    </div>
+                    <div className="app-panel-muted p-3">
+                      <p className="text-slate-500 dark:text-slate-400">Senha</p>
+                      <p className="mt-1 font-medium text-slate-900 dark:text-white">
+                        {item.mustChangePassword ? "Troca pendente" : "Configurada"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <ActionIconButton
+                      action="edit"
+                      label={`Editar ${item.name}`}
+                      iconOnly
+                      onClick={() => openEditForm(item)}
+                    />
+                    <ActionIconButton
+                      action={item.active ? "deactivate" : "activate"}
+                      label={
+                        item.active
+                          ? `Inativar ${item.name}`
+                          : `Reativar ${item.name}`
+                      }
+                      iconOnly
+                      loading={togglingUserId === item.id}
+                      onClick={() => handleToggleActive(item)}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="hidden overflow-x-auto pt-4 md:block">
+              <table className="app-table">
+                <thead>
+                  <tr>
+                    <th>Nome</th>
+                    <th>Usuario</th>
+                    <th>Loja</th>
+                    <th>Perfil</th>
+                    <th>Status</th>
+                    <th>Senha</th>
+                    <th className="text-right">Acoes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredUsers.map((item) => (
+                    <tr key={item.id}>
+                      <td>
+                        <div className="space-y-1">
+                          <p className="font-semibold text-slate-900 dark:text-white">
+                            {item.name}
+                          </p>
+                          <p className="text-xs text-slate-500 dark:text-slate-400">
+                            {item.email || "Email nao informado"}
+                          </p>
+                        </div>
+                      </td>
+                      <td>
+                        <span className="font-mono text-sm">{item.username}</span>
+                      </td>
+                      <td>{item.storeId}</td>
+                      <td>
+                        <span
+                          className={
+                            item.role === "admin"
+                              ? "inline-flex rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-700 dark:border-blue-400/20 dark:bg-blue-500/10 dark:text-blue-200"
+                              : "inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-200"
+                          }
+                        >
+                          {getRoleLabel(item.role)}
+                        </span>
+                      </td>
+                      <td>
+                        <span
+                          className={
+                            item.active
+                              ? "inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-500/10 dark:text-emerald-200"
+                              : "inline-flex rounded-full border border-red-200 bg-red-50 px-2.5 py-1 text-[11px] font-semibold text-red-700 dark:border-red-400/20 dark:bg-red-500/10 dark:text-red-200"
+                          }
+                        >
+                          {item.active ? "Ativo" : "Inativo"}
+                        </span>
+                      </td>
+                      <td>
+                        <span
+                          className={
+                            item.mustChangePassword
+                              ? "inline-flex rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-700 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-200"
+                              : "inline-flex rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-200"
+                          }
+                        >
+                          {item.mustChangePassword ? "Troca pendente" : "Configurada"}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="flex justify-end gap-2">
+                          <ActionIconButton
+                            action="edit"
+                            label={`Editar ${item.name}`}
+                            iconOnly
+                            onClick={() => openEditForm(item)}
+                          />
+                          <ActionIconButton
+                            action={item.active ? "deactivate" : "activate"}
+                            label={
+                              item.active
+                                ? `Inativar ${item.name}`
+                                : `Reativar ${item.name}`
+                            }
+                            iconOnly
+                            loading={togglingUserId === item.id}
+                            onClick={() => handleToggleActive(item)}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </Card>
+
+      <Dialog
+        open={formOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeForm();
+            return;
+          }
+
+          setFormOpen(true);
+        }}
+      >
+        <DialogContent className="max-h-[calc(100vh-2rem)] max-w-3xl overflow-hidden border-blue-100 bg-white p-0 dark:border-yellow-400/10 dark:bg-[#08080a]">
+          <form
+            onSubmit={handleSubmit}
+            className="flex max-h-[calc(100vh-2rem)] flex-col"
+          >
+            <DialogHeader className="shrink-0 border-b border-border px-6 py-5">
+              <DialogTitle className="flex items-center gap-2 text-slate-950 dark:text-white">
+                {isEditMode ? (
+                  <UserCog className="h-5 w-5 text-yellow-500" />
+                ) : (
+                  <UserRoundPlus className="h-5 w-5 text-yellow-500" />
+                )}
+                {isEditMode ? "Editar acesso" : "Novo acesso"}
+              </DialogTitle>
+              <DialogDescription>
+                {isEditMode
+                  ? "Atualize os dados de identificacao, loja e politicas de acesso deste usuario."
+                  : "Cadastre um novo usuario com senha temporaria e troca obrigatoria no primeiro acesso."}
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <label className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Nome completo
+                  </label>
+                  <Input
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    placeholder="Ex: Maria Souza"
+                    className="app-field"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Email de autenticacao
+                  </label>
+                  <Input
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    placeholder="usuario@grupomm.com.br"
+                    disabled={isEditMode}
+                    className={`app-field ${isEditMode ? "opacity-70" : ""}`}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Usuario para login
+                  </label>
+                  <Input
+                    value={username}
+                    onChange={(event) => setUsername(event.target.value)}
+                    placeholder="Ex: maria.cedral"
+                    className="app-field"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Loja / unidade
+                  </label>
+                  <Input
+                    value={storeId}
+                    onChange={(event) => setStoreId(event.target.value)}
+                    placeholder="Ex: destack-cedral"
+                    className="app-field"
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="rounded-[24px] border border-slate-200 bg-slate-50/90 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Perfil de acesso
+                  </p>
+                  <div className="mt-3 space-y-2">
+                    <select
+                      className="app-select"
+                      value={role}
+                      onChange={(event) => setRole(event.target.value as UserRole)}
+                    >
+                      <option value="user">Responsavel por loja</option>
+                      <option value="admin">Administrador</option>
+                    </select>
+                    <p className="text-sm text-slate-500 dark:text-slate-400">
+                      {role === "admin"
+                        ? "Pode gerenciar toda a plataforma, relatorios e administracao."
+                        : "Focado na operacao da loja, com acesso aos modulos do dia a dia."}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="rounded-[24px] border border-slate-200 bg-slate-50/90 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                    Politica de senha
+                  </p>
+
+                  {isEditMode ? (
+                    <label className="mt-3 flex items-start gap-3 rounded-[20px] border border-border bg-white/80 p-3 dark:bg-slate-950/50">
+                      <input
+                        type="checkbox"
+                        checked={mustChangePassword}
+                        onChange={(event) =>
+                          setMustChangePassword(event.target.checked)
+                        }
+                        className="mt-1 h-4 w-4 rounded border-slate-300 text-blue-600"
+                      />
+                      <span className="text-sm text-slate-600 dark:text-slate-300">
+                        Exigir troca de senha no proximo acesso deste usuario.
+                      </span>
+                    </label>
+                  ) : (
+                    <div className="mt-3 rounded-[20px] border border-amber-200 bg-amber-50/90 p-3 text-sm text-amber-700 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-200">
+                      A senha temporaria sera gerada automaticamente e a troca no
+                      primeiro acesso sera obrigatoria.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {isEditMode && editingUser ? (
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="rounded-[24px] border border-slate-200 bg-slate-50/90 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+                    <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                      Resumo do acesso
+                    </p>
+                    <div className="mt-3 space-y-2 text-sm text-slate-600 dark:text-slate-300">
+                      <p>
+                        Status atual:{" "}
+                        <span className="font-semibold">
+                          {editingUser.active ? "Ativo" : "Inativo"}
+                        </span>
+                      </p>
+                      <p>
+                        Papel atual:{" "}
+                        <span className="font-semibold">
+                          {getRoleLabel(editingUser.role)}
+                        </span>
+                      </p>
+                      <p>
+                        ID interno:{" "}
+                        <span className="font-mono text-xs">{editingUser.id}</span>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-[24px] border border-slate-200 bg-slate-50/90 p-4 dark:border-white/10 dark:bg-white/[0.03]">
+                    <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">
+                      Observacoes
+                    </p>
+                    <p className="mt-3 text-sm leading-6 text-slate-500 dark:text-slate-400">
+                      Contas inativas nao conseguem entrar no sistema. Mudancas de
+                      perfil para a sua propria conta devem ser feitas com apoio de
+                      outro administrador.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+
+              {formOpen && errorMsg ? (
+                <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-400/20 dark:bg-red-500/10 dark:text-red-200">
+                  {errorMsg}
+                </div>
+              ) : null}
+            </div>
+
+            <DialogFooter className="shrink-0 border-t border-border bg-white px-6 py-4 dark:bg-[#08080a]">
+              <Button type="button" variant="outline" onClick={closeForm}>
+                Cancelar
+              </Button>
+              <Button type="submit" disabled={saving}>
                 {saving
                   ? isEditMode
                     ? "Salvando alteracoes..."
-                    : "Salvando..."
+                    : "Criando acesso..."
                   : isEditMode
                   ? "Salvar alteracoes"
-                  : "Salvar usuário"}
+                  : "Criar acesso"}
               </Button>
-              <Button
-                type="button"
-                variant="destructive"
-                className="text-sm"
-                onClick={() => {
-                  setFormOpen(false);
-                  resetForm();
-                }}
-              >
-                Cancelar
-              </Button>
-            </div>
+            </DialogFooter>
           </form>
-        </Card>
-      )}
-
-      {/* Lista de usuários */}
-      <Card className="app-panel p-4 md:p-5">
-        <h2 className="text-lg font-semibold text-gray-100 mb-3">
-          Usuários cadastrados
-        </h2>
-        {loading ? (
-          <PageLoadingState
-            title="Carregando usuarios"
-            description="Estamos organizando os acessos cadastrados para voce continuar sem repetir a acao."
-            compact
-          />
-        ) : usersList.length === 0 ? (
-          <p className="text-sm text-gray-400">
-            Nenhum usuário cadastrado ainda.
-          </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="text-left border-b border-neutral-800 text-gray-400">
-                  <th className="py-2 pr-2">Nome</th>
-                  <th className="py-2 px-2">Username</th>
-                  <th className="py-2 px-2">Email</th>
-                  <th className="py-2 px-2">Loja</th>
-                  <th className="py-2 px-2">Papel</th>
-                  <th className="py-2 px-2">Status</th>
-                  <th className="py-2 px-2">Senha</th>
-                  <th className="py-2 pl-2 text-right">Acoes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {usersList.map((u) => (
-                  <tr
-                    key={u.id}
-                    className="border-b border-neutral-900 hover:bg-neutral-800/60"
-                  >
-                    <td className="py-2 pr-2 text-gray-100">{u.name}</td>
-                    <td className="py-2 px-2 text-gray-200">
-                      {u.username ?? "-"}
-                    </td>
-                    <td className="py-2 px-2 text-gray-300">
-                      {u.email ?? "-"}
-                    </td>
-                    <td className="py-2 px-2 text-gray-200">{u.storeId}</td>
-                    <td className="py-2 px-2 uppercase text-xs text-gray-300">
-                      {u.role}
-                    </td>
-                    <td className="py-2 px-2">
-                      <span
-                        className={`px-2 py-1 rounded-full text-[11px] font-semibold ${
-                          u.active
-                            ? "bg-green-500/20 text-green-300 border border-green-500/40"
-                            : "bg-red-500/20 text-red-300 border border-red-500/40"
-                        }`}
-                      >
-                        {u.active ? "Ativo" : "Inativo"}
-                      </span>
-                    </td>
-                    <td className="py-2 px-2">
-                      {u.mustChangePassword ? (
-                        <span className="px-2 py-1 rounded-full text-[11px] font-semibold bg-yellow-500/10 text-yellow-300 border border-yellow-500/40">
-                          Deve trocar a senha
-                        </span>
-                      ) : (
-                        <span className="px-2 py-1 rounded-full text-[11px] text-gray-400 bg-neutral-800 border border-neutral-700">
-                          OK
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-2 pl-2 text-right">
-                      <div className="flex flex-wrap justify-end gap-2">
-                        <ActionIconButton
-                          action={u.active ? "deactivate" : "activate"}
-                          onClick={() => handleToggleAtivo(u)}
-                        />
-
-                        <ActionIconButton
-                          action="edit"
-                          onClick={() => abrirFormEdicao(u)}
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
-
